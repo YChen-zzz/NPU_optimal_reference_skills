@@ -1,6 +1,6 @@
 ---
 name: NPU 优化实施
-description: 在昇腾 NPU 上实施模型调优，包括算子融合、Host 开销消减、布局优化、Decode 优化、图编译和训练调优。当用户要求优化性能或实施优化方案时触发。
+description: 在昇腾 NPU 上实施模型调优。当用户要求优化性能或实施优化方案时触发。
 ---
 
 # NPU 优化实施
@@ -11,16 +11,30 @@ description: 在昇腾 NPU 上实施模型调优，包括算子融合、Host 开
 
 **图编译优先尝试**（收益上限最高），失败后走 eager 模式优化。
 
-## 优化方向选择
+### 优化三原语
 
-| Profiling 特征 | 优化方向 | 参考文档 |
-|---------------|---------|----------|
-| Host-Bound 且形状固定 | 图编译（优先尝试） | 见下文 |
-| 大量小 kernel，timeline 密集碎片 | 算子融合 | [operator_fusion.md](references/operator_fusion.md) |
-| Host 利用率低，NPU 等待 CPU 调度 | Host 开销消减 | [host_overhead_reduction.md](references/host_overhead_reduction.md) |
-| 非计算 kernel（format_cast、Transpose）占比高 | 数据布局优化 | 见下文 |
-| Decode Free time 高，逐步延迟抖动 | Decode 路径优化 | [decode_optimization.md](references/decode_optimization.md) |
-| 训练场景 step time 偶发抖动 | 训练调优 | [training_tuning.md](references/training_tuning.md) |
+所有具体的性能优化手段，本质上只做三件事：
+
+| 原语 | 核心问题 | 识别线索 |
+|------|---------|---------|
+| **去重** | "这个工作是必要的吗？能和相邻工作合并吗？" | 同类算子调用次数异常多；代码中存在可合并的独立调用 |
+| **复用** | "这个结果之后还会被需要吗？" | MemSet / empty_tensor 次数多；同一结果被反复计算/分配 |
+| **掩盖** | "这段延迟能和其他工作并行吗？" | timeline 中通信/计算串行；Host 等待 Device 或反之 |
+
+详见各原语文档中的原理推导和示例。
+
+## 参考文档索引
+
+| 文档 | 内容 | 加载时机 |
+|------|------|---------|
+| [eliminate_redundancy.md](references/eliminate_redundancy.md) | 去重原理：合并、消除、清理 | 需要减少 kernel 数、清理冗余操作时 |
+| [reuse_and_precompute.md](references/reuse_and_precompute.md) | 复用原理：缓存、预分配、原地操作 | 需要减少内存分配、消除重复计算时 |
+| [hide_latency.md](references/hide_latency.md) | 掩盖原理：通信-计算重叠、流水线 | 需要隐藏通信延迟、减少 pipeline bubble 时 |
+| [parallel_design.md](references/parallel_design.md) | 多卡并行方案设计方法论 | 单卡 OOM、需要设计张量切分方案时 |
+| [npu_checklist.md](references/npu_checklist.md) | NPU 已知问题主动扫描清单 | 每次接到优化任务时，不依赖 profiling 即可扫描 |
+| [npu_operator_reference.md](references/npu_operator_reference.md) | NPU 融合算子 API 速查 | 需要查找具体算子签名和注意事项时 |
+| [decode_optimization.md](references/decode_optimization.md) | 自回归 Decode 路径专题 | Decode 场景性能问题时 |
+| [training_tuning.md](references/training_tuning.md) | 训练场景 OS 级调优配置 | 训练 step time 抖动、需要开环境变量时 |
 
 ## 图编译
 
@@ -33,67 +47,24 @@ description: 在昇腾 NPU 上实施模型调优，包括算子融合、Host 开
 | `reduce-overhead`（ACLGraph） | 形状固定、Host 调度开销显著 |
 | `max-autotune`（GE） | 可接受较长编译时间，追求极致吞吐 |
 
-**放弃条件**（满足任一即回退 eager）：
-- 算子不兼容且无替代方案
-- 图太大导致编译期 OOM
-- 触发无法绕过的框架 bug
+**放弃条件**（满足任一即回退 eager）：算子不兼容、图太大编译期 OOM、触发框架 bug。
 
-**失败诊断思路**：
-- 先简后繁：单层 Linear → 加 Norm → 加 Attention → 完整模型，定位是哪个算子导致失败
-- 区分失败类型：
-  - 算子不支持（GE converter 缺失）→ 查替代算子或 fallback
-  - shape 推导失败（tiling illegal）→ dump GE graph 检查节点 shape 是否传播
-  - 编译期 OOM → 缩小编译范围（只编译热点子图）
-  - multi-stream 不兼容 → 替换为兼容算子（如 FA → FIA）
-- 环境排查：确认 torch_npu / CANN / torchair 版本配套；torchair API 有新旧两版（`get_config` vs `CompilerConfig`）
+**编译范围策略**：
+- 不建议直接 `torch.compile(model)`——通信、控制流、side-effect 都会切图
+- **核心原则**：挑"碎而密"的地方编，不挑"大而炸"的地方编
+- 从纯计算子模块开始（Transition、LayerNorm + Linear 链路）
+- 大 attention / 大 matmul 主体留在图外
+- 含 HCCL 通信的 block 不编译
+- 编译后必须验证精度
 
-## 算子融合
+## CANN 环境配置
 
-将多个小 kernel 合并为单个融合 kernel，消除 dispatch gap。
-
-思路：从 profiling 识别连续小算子组 → 查找对应融合算子 → probe 验证可用性 → profiling 确认收益。
-注意融合不一定更快（小 shape 时固定开销可能超过收益）。
-
-详见 [operator_fusion.md](references/operator_fusion.md)，NPU 算子 API 细节见 [npu_operator_reference.md](references/npu_operator_reference.md)
-
-## Host 开销消减
-
-减少 Host 在两个 kernel 之间做的事，让 device 流水线保持忙碌。
-
-思路分层：减少调用次数 → 消除运行时分配 → 预计算/prefetch → 消除格式转换 → 清理冗余逻辑。
-
-详见 [host_overhead_reduction.md](references/host_overhead_reduction.md)
-
-## 数据布局优化
-
-选择对 NPU 友好的 tensor 布局，消除算子内部的 format_cast / transpose。
-
-核心原则：
-- 理论上更优的布局在 NPU 上可能更慢 — 必须微基准验证
-- NPU 上连续写入与非连续写入的性能差异可能很大，决定了 cache 维度顺序
-- 统一推理过程的维度约定，避免频繁 squeeze/unsqueeze/reshape
-
-## Decode 路径优化
-
-自回归推理每步计算量小但 host-device 交互不减。
-
-思路：精简 decode 循环 → 优化 KV cache 策略 → 减少同步次数 → 消除冗余计算 → 统一数据格式。
-注意 GPU 上的 KV cache 最优策略在 NPU 上可能反转，必须实测。
-
-详见 [decode_optimization.md](references/decode_optimization.md)
-
-## 训练调优
-
-训练场景侧重 OS 级手段：流水优化（TASK_QUEUE_ENABLE）→ CPU 绑核 → tcmalloc 替换。
-每次只变更一个配置，观察后再叠加。
-
-详见 [training_tuning.md](references/training_tuning.md)
-
-## CANN 环境调优
-
-- `TASK_QUEUE_ENABLE=2`：Host-Device 异步流水，训练收益显著，推理需实测
-- 去除多余全局 hook（如 `transfer_to_npu`）的额外包装开销
-- 环境变量必须在 `import torch_npu` **之前**设置
+- `TASK_QUEUE_ENABLE=2`：Host-Device 异步流水
+- `CPU_AFFINITY_CONF=1`：CPU 绑核
+- `LD_PRELOAD=libtcmalloc.so`：高性能 malloc
+- `PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`：减少碎片
+- `HCCL_BUFFSIZE=32`：通信缓冲区大小
+- 以上环境变量必须在 `import torch_npu` **之前**设置
 
 ## 通用原则
 
@@ -101,3 +72,5 @@ description: 在昇腾 NPU 上实施模型调优，包括算子融合、Host 开
 - GPU 最优实践在 NPU 可能反效果，必须实测验证
 - 保留原始实现供 fallback
 - 每次验证通过后 git commit
+- 权重修改须保持 `state_dict` key 不变，确保 checkpoint 加载兼容
+- 优化尝试失败也要记录（what + why + 实际效果），避免重复踩坑

@@ -1,6 +1,6 @@
 # 训练场景调优详解
 
-## 流水优化（TASK_QUEUE_ENABLE）
+## 流水优化（TASK_QUEUE_ENABLE）〈掩盖——让 Host 下发和 Device 执行在时间上重叠〉
 
 ### 原理
 
@@ -27,7 +27,7 @@ export TASK_QUEUE_ENABLE=2
 
 ---
 
-## CPU 绑核优化（CPU_AFFINITY_CONF）
+## CPU 绑核优化（CPU_AFFINITY_CONF）〈去重——消除跨 NUMA 内存访问的额外延迟〉
 
 ### 原理
 
@@ -65,7 +65,7 @@ lscpu
 
 ---
 
-## 高性能内存库替换（tcmalloc）
+## 高性能内存库替换（tcmalloc）〈复用——thread-local cache 让同线程的 malloc/free 复用本地内存块〉
 
 ### 原理
 

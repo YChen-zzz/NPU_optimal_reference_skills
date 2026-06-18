@@ -38,7 +38,15 @@ description: 分析昇腾 NPU profiling 数据以定位性能瓶颈并提出优�
 
 - **Host-Bound**: 设备利用率低，Free >> Computing → 问题在 host dispatch、Python 开销
 - **Compute-Bound**: 利用率高，kernel 本身耗时大 → 优化算子或降精度
-- **Memory-Bound**: 显存压力导致 HBM bandwidth 竞争 → 全局退化，清理冗余权重
+- **Memory-Bound**: 利用率高但 kernel 吞吐远低于理论峰值 → HBM bandwidth 竞争
+  - 同时持有冗余权重（原始 + 预转置两份）导致全局带宽退化，表现为所有 kernel 均匀变慢
+  - 大 shape 算子的 data movement 时间 >> 计算时间（访存密集型算子）
+- **Allocator-Bound**: 表现类似 Host-Bound（设备空闲），但根因是 NPU allocator 触发同步
+  - allocator 频繁同步：`empty_tensor` 次数异常多、MemSet 算子大量出现 → allocator 在每次分配时阻塞等待 device 完成
+  - H2D/D2H 同步打断 pipeline：trace 中 NPU 计算流出现空泡，前后有 `.item()` / `.to(device)` / `.numpy()` 等操作
+  - 碎片化严重：`reserved >> allocated` → 池中有大量空闲碎片但不满足新请求的连续大小要求 → 考虑 `expandable_segments` 或战略性 `empty_cache`
+
+> **注意**: Allocator-Bound 容易与 Host-Bound 混淆——两者在 profiling 中都表现为"设备空闲"。区分方法：如果 operator_details 中 `empty_tensor` / `aten::empty` 的 Host Self Duration 占比显著，则为 Allocator-Bound；如果 Python dispatch wrapper 占比高，则为 Host-Bound。
 
 ## Host-Bound 根因定位
 
@@ -85,3 +93,5 @@ CANN profiler Level1 在每个 kernel 前后插入 barrier → 破坏 TASK_QUEUE
 
 详见 [analysis_scripts.md](references/analysis_scripts.md) 获取分析脚本模板。
 详见 [host_bound_patterns.md](references/host_bound_patterns.md) 获取 Host-Bound 深度诊断模式。
+详见 [memory_profiling.md](references/memory_profiling.md) 获取显存峰值分析方法和常见显存陷阱。
+详见 [profiling_to_action.md](references/profiling_to_action.md) 获取"profiling 特征 → 具体行动"的快速映射表。
