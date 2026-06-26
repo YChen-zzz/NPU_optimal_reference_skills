@@ -1,5 +1,23 @@
 # Profiling 采集代码模板
 
+> **路径规范**：所有 profiling 输出必须保存到 `<workspace>/profiling/<timestamp>/`，禁止使用 `/tmp` 或固定路径。详见 01_preparation/SKILL.md「Profiling 输出路径规范」。以下模板中使用 `profiling_dir` 变量，调用前需按规范构造。
+>
+> **一致性要求**：agent 为项目编写采集脚本时，必须遵循主 SKILL.md「标准化操作规范」中的约束（环境变量、时间戳目录、运行日志、可复现性）。以下代码为模板示例，需根据项目实际情况适配。
+
+```python
+# 路径构造（在所有采集代码前执行）
+import os, datetime
+PROFILING_BASE = os.path.join(os.getcwd(), "profiling")
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+profiling_dir = os.path.join(PROFILING_BASE, timestamp)
+os.makedirs(profiling_dir, exist_ok=True)
+# 更新 latest 软链接
+latest_link = os.path.join(PROFILING_BASE, "latest")
+if os.path.islink(latest_link):
+    os.remove(latest_link)
+os.symlink(timestamp, latest_link)
+```
+
 ## 1. 训练场景 schedule 配置
 
 训练场景使用 `schedule` 控制采集范围，避免全量采集导致数据膨胀：
@@ -23,7 +41,7 @@ schedule = torch_npu.profiler.schedule(
 ```python
 with torch_npu.profiler.profile(
     activities=[torch_npu.profiler.ProfilerActivity.NPU],
-    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./profiling_output")
+    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_dir)
 ) as prof:
     model(input_data)
     prof.step()
@@ -43,7 +61,7 @@ with torch_npu.profiler.profile(
     schedule=torch_npu.profiler.schedule(
         wait=1, warmup=1, active=1, repeat=1, skip_first=20
     ),
-    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./profiling-L0")
+    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_dir)
 ) as prof:
     for step, batch in enumerate(dataloader):
         forward_step(batch)
@@ -67,7 +85,7 @@ with torch_npu.profiler.profile(
     experimental_config=torch_npu.profiler._ExperimentalConfig(
         profiler_level=torch_npu.profiler.ProfilerLevel.Level1
     ),
-    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./profiling-L1")
+    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_dir)
 ) as prof:
     for step, batch in enumerate(dataloader):
         forward_step(batch)
@@ -91,7 +109,7 @@ with torch_npu.profiler.profile(
     experimental_config=torch_npu.profiler._ExperimentalConfig(
         profiler_level=torch_npu.profiler.ProfilerLevel.Level1
     ),
-    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./profiling-L2")
+    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_dir)
 ) as prof:
     for step, batch in enumerate(dataloader):
         forward_step(batch)
@@ -113,9 +131,13 @@ import torch_npu
 import pytorch_lightning as pl
 
 class NPUProfilingCallback(pl.Callback):
-    def __init__(self, output_dir="./profiling", level="L0",
+    def __init__(self, output_dir=None, level="L0",
                  skip_first=20, wait=1, warmup=1, active=1, repeat=1):
         super().__init__()
+        if output_dir is None:
+            output_dir = os.path.join(os.getcwd(), "profiling",
+                                      datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+            os.makedirs(output_dir, exist_ok=True)
         self.output_dir, self.level = output_dir, level
         self.skip_first = skip_first
         self.wait, self.warmup, self.active, self.repeat = wait, warmup, active, repeat
@@ -160,7 +182,11 @@ from transformers import TrainerCallback
 import torch_npu
 
 class NPUProfilingTrainerCallback(TrainerCallback):
-    def __init__(self, output_dir="./profiling", skip_first=20):
+    def __init__(self, output_dir=None, skip_first=20):
+        if output_dir is None:
+            output_dir = os.path.join(os.getcwd(), "profiling",
+                                      datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+            os.makedirs(output_dir, exist_ok=True)
         self.output_dir, self.skip_first = output_dir, skip_first
         self.prof = None
 
@@ -193,7 +219,7 @@ if local_rank == 0:
         activities=[torch_npu.profiler.ProfilerActivity.NPU],
         schedule=torch_npu.profiler.schedule(
             wait=1, warmup=1, active=1, repeat=1, skip_first=20),
-        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./profiling-ds"),
+        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_dir),
     )
     prof.start()
 
@@ -220,7 +246,7 @@ with torch.profiler.profile(
     schedule=torch.profiler.schedule(
         wait=1, warmup=1, active=1, repeat=1, skip_first=20
     ),
-    on_trace_ready=torch.profiler.tensorboard_trace_handler("./gpu-profiling")
+    on_trace_ready=torch.profiler.tensorboard_trace_handler(profiling_dir)
 ) as prof:
     for step, batch in enumerate(dataloader):
         forward_step(batch)
@@ -241,4 +267,4 @@ with torch.profiler.profile(
 - 推理场景：输入固定、batch 稳定，避免多轮结果不可比
 - 磁盘空间充足（L2 可达 10GB+）
 - 已设置 `TASK_QUEUE_ENABLE=2` 和 `CPU_AFFINITY_CONF=1`
-- 运行了 `scripts/validate_profiling_env.py` 确认环境就绪
+- 运行了本 skill 的 `scripts/validate_profiling_env.py` 确认环境就绪

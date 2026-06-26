@@ -1,93 +1,50 @@
-# Host-Bound 深度诊断模式
+# Host-Bound 深度诊断
 
-## enqueue gap 分析
+当 `parse_step_trace` 判定设备利用率低（瓶颈在 host 侧）时，按以下步骤定位根因。
 
-从 trace_view.json 提取 enqueue 事件，计算相邻 enqueue 的时间 gap：
+## 步骤 1：查看 host 时间分布
 
-1. 解析 trace_view.json，提取所有 `cat='enqueue'` 事件
-2. 计算相邻 enqueue 的时间 gap
-3. 按 gap 排序找 top 20
-4. 对最大 gap，提取 gap 时段内的所有 host 事件（cpu_op + python_function）
-5. 按 kernel 类型聚合 > 100μs 的 gap
+运行 `parse_operator_details.py` 默认模式。输出的 "Pure Host Ops" 部分展示了哪些操作占用了 host 时间但没有触发 device 计算。
 
-## 逐层 kernel 序列分析
+按以下类别聚合判断方向：
 
-按 Step Id 过滤单步数据，然后按层分组统计：
+| 类别 | 典型算子 | 优化方向 |
+|------|---------|---------|
+| tensor metadata ops | empty_tensor, view, as_strided | 预分配 buffer、减少临时 tensor |
+| Python dispatch wrapper | aten::matmul, aten::dropout | flat forward、去除冗余调用 |
+| D→H sync ops | aten::item, aten::_local_scalar_dense | 消除 .item()/.numpy()，缓存或延迟到 batch 结束 |
+| ACL kernel launch | aclnnMm, aclnnRmsNorm | 图编译（通常不可单独压缩） |
+| format/sync | format_cast, SynchronizeStream | 统一 layout、消除运行时 transpose |
 
-```bash
-awk -F',' 'NR>1 {print $6, $11, $12}' kernel_details.csv | \
-awk '{dur+=$2; wait+=$3; n++; if(n%KERNELS_PER_LAYER==0){
-  printf "Layer %d: compute=%dus, wait=%dus, ratio=%.0f%%\n",
-  n/KERNELS_PER_LAYER, dur, wait, wait/(dur+wait)*100; dur=0;wait=0}}' | head -20
-```
+**特别注意 `.item()` 同步**：HuggingFace Trainer 的 gradient clipping 和 NaN detection 会在每步调用 `.item()`，每次强制 D→H 同步。在训练场景中这可能占据 >40% 的 host 时间。检查 `parse_operator_details --filter item` 或 `--filter _local_scalar` 确认。
 
-### TASK_QUEUE ramp-up 检测
+## 步骤 2：确认 bubble 是否真实
 
-- Layer 1-2: queue 还空 → 大 gap（ramp-up 阶段）
-- Layer 3+: queue 已满 → gap ≈ 0（稳态）
-- 如果 Layer 3+ 仍有大 gap → TASK_QUEUE 未生效或有其他 stall 源
+查看 `parse_kernel_details.py` 的 Wait Time Distribution。
 
-## Host-Bound 优化策略
+**Level0 vs Level1**：Level1 在每个 kernel 前后插入 barrier，破坏 TASK_QUEUE 异步流水。Level1 的 bubble 大部分是 profiler 注入的。
 
-### 策略总体思路
+确认方法：
+- Level0 重新采集
+- 对比两次的 Computing/Free 时间
+- wall-clock 延迟交叉验证
 
-```
-图编译优先尝试（收益上限最高）
-  ├─ 成功 → 直接享受图模式红利
-  └─ 失败（算子不兼容 / 图太大内存爆炸 / 无法解决的 bug）
-        → 回退 eager 模式，按 Level 0→4 逐级优化
-```
+## 步骤 3：判断 TASK_QUEUE 状态
 
-### 图编译（优先尝试）
+`parse_kernel_details.py` 高等待上下文中：
+- 前几个 kernel wait 大、后续稳定 → 正常 ramp-up
+- 所有 kernel wait 均匀大 → TASK_QUEUE 未生效，检查环境变量 `TASK_QUEUE_ENABLE=2`
 
-| 步骤 | 操作 |
-|------|------|
-| 1 | 用最简子模块（如单层 Linear）验证图编译基础能力 |
-| 2 | 逐步扩大编译范围（+ Norm → + Attention → 完整模型） |
-| 3 | 确认精度和性能 |
+## 步骤 4：排除核间切换影响
 
-**放弃条件**（满足任一即回退 eager）：
-- 算子不兼容且无替代方案
-- 图太大导致编译期内存爆炸（OOM）
-- 触发框架层 bug 且无法绕过
+`parse_kernel_details.py` 输出的 Accelerator Core Distribution 如果 AI_CORE 和 AI_VECTOR_CORE 比例接近，可能频繁切换。用 `--filter` 对比切换点和非切换点的 wait time 差异，< 10μs 则不是主因。
 
-### Eager 模式分层优化（图编译不可用时）
+## 特殊场景：自回归 Decode
 
-按以下层级依次实施：
+Decode 天然 host-bound——每 token 只有少量计算但需完整 dispatch。
 
-| Level | 手段 | 消除目标 | 说明 |
-|-------|------|---------|------|
-| 0 | CANN 环境调优 | 基础调度效率 | `TASK_QUEUE_ENABLE=2` 开启 Host-Device 异步流水；`CPU_AFFINITY_CONF=1` CPU 绑核减少调度抖动 |
-| 1 | Python 框架开销消除 | `Module.__call__` 调度栈 | 扁平化 forward、monkey-patch 去除推理时冗余逻辑、移除多余全局 hook |
-| 2 | 内存分配消除 | 运行时 tensor 分配 | 预分配输出 buffer + `out=` 写入；原地操作（`add_` / `mul_`） |
-| 3 | 权重与数据 Prefetch | 运行时数据准备开销 | 权重预转置；中间结果缓存复用；跨层 prefetch（当前层计算时预加载下一层权重） |
-| 4 | 数据布局优化 | 格式转换 / transpose 开销 | 选择 NPU 友好 layout；消除 `format_cast`；统一维度约定 |
+判断依据：`parse_kernel_details.py` 全局模式如果显示 avg kernel duration 极小（<20us）且 kernel 数极多 → decode 场景。
 
-**实施原则**：
-- 从 Level 0 开始逐级实施，每级完成后重新 profiling 确认瓶颈是否转移
-- Level 0–2 为低风险操作；Level 3–4 需微基准验证
-- 不要跳层——如 Level 1 未做就做 Level 4，效果不明显且难以归因
-
-## 核间同步分析
-
-AI_CORE vs AI_VECTOR_CORE 切换是否导致额外 wait：
-
-```python
-core_seq = [(r['Accelerator Core'], float(r['Wait Time(us)'])) for r in step_n]
-switches = sum(1 for i in range(1, len(core_seq)) if core_seq[i][0] != core_seq[i-1][0])
-switch_wait = [core_seq[i][1] for i in range(1,len(core_seq)) if core_seq[i][0]!=core_seq[i-1][0]]
-noswitch_wait = [core_seq[i][1] for i in range(1,len(core_seq)) if core_seq[i][0]==core_seq[i-1][0]]
-print(f"切换率: {100*switches/(len(core_seq)-1):.0f}%")
-print(f"切换 avg wait: {sum(switch_wait)/len(switch_wait):.0f}us")
-print(f"不切换 avg wait: {sum(noswitch_wait)/len(noswitch_wait):.0f}us")
-```
-
-如果差异 < 10μs → 核切换不是主因，主因是 Python dispatch 固有延迟。
-
-## 自回归 Decode 的 Host-Bound 本质
-
-自回归 decode 的根本瓶颈分析：
-1. 计算每层每步的 kernel 数和 compute 总量
-2. 计算 per-kernel 的 dispatch overhead（Level0 的 avg wait）
-3. 计算 dispatch/compute ratio
-4. 如果 ratio > 1 → host-bound，eager 模式下无法解决 → 需要 fp16（启用融合算子减少 kernel 数）或图编译
+此时 eager 模式下 dispatch 开销无法根本消除，需要：
+- fp16/bf16 启用融合算子（减少 kernel 数）
+- 图编译（消除逐算子 dispatch）

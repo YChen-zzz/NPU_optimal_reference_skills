@@ -8,7 +8,7 @@ description: NPU 模型适配过程中的工程化最佳实践，包括目录规
 ## 工程目录规划
 
 ### 命名原则
-- 目录命名按功能语义：`npu_inference/` 而非 `npu_reference/`
+- 目录命名按功能语义：
 - GPU/NPU 推理目录结构对称，方便对比
 
 ### 推荐结构
@@ -91,37 +91,34 @@ main 分支（稳定版本，不直接修改）
 
 ### .gitignore 配置
 
-profiling trace 文件大、临时文件多，**不应纳入 git**：
+profiling trace 文件大、临时文件多，不应纳入 git。详见 [templates/gitignore_template.md](templates/gitignore_template.md)。
 
-```gitignore
-# Profiling 输出目录
-profiling/
-*.pb
-*.json.gz
-ASCEND_PROFILER_OUTPUT/
-PROF_*/
-
-# 运行时临时文件
-*.log
-*.npy
-*.pt
-__pycache__/
-*.pyc
-output/
-
-# 模型权重（如有单独存储方案）
-weights/
-*.safetensors
-*.bin
-```
-
-**应当纳入 git** 的：源代码、脚本、文档、对比结果的摘要（非原始大文件）
+应当纳入 git 的：源代码、脚本、文档、对比结果的摘要（非原始大文件）。
 
 ### 提交纪律
 
-- **全量验证通过后**才提交：不要在验证前 commit
+- **提交前必须完成以下步骤**（缺一不可）：
+  1. 全量精度验证通过（Level 2，与原始 baseline 对比）
+  2. Profiling 确认有收益（重新采集，对比优化前后数据）
+  3. 用户确认提交（展示总结，等待用户同意）
 - 每批优化一个 commit，不要多批合并
 - 实验性尝试前确认有干净的回退点（以当前工作分支 HEAD 为锐点）
+
+### 提交前用户确认流程
+
+git commit 前，**必须**向用户展示本批总结并使用 `ask_user_question` 等待确认：
+
+1. **总结内容**（必须包含以下信息）：
+   - 本批实施的优化点列表及简述
+   - 性能数据对比（优化前 vs 优化后，含数据来源）
+   - 精度验证结果（指标 + 通过/未通过）
+   - 修改的文件列表
+   - 未采纳的方案及原因（如有）
+2. **询问用户**：
+   - 是否确认提交本批优化
+   - 是否需要回退某些改动再提交
+3. **用户确认后**才执行 git commit
+4. 如用户要求调整，完成调整后重新验证精度和 profiling，再次走确认流程
 
 commit message 格式：
 ```bash
@@ -142,79 +139,7 @@ git commit -m "[revert] 回退 StaticCache: 在 NPU 上比 DynamicCache 更慢"
 
 **触发时机**：每批优化全量验证通过、git commit 完成后，必须更新一次优化日志。
 
-### 日志文件结构
-
-```
-docs/optimization_log.md   ← 主日志文件
-```
-
-### 日志条目格式
-
-每批记录一个条目，包含以下字段：
-
-```markdown
-## 批次 N（<日期>）
-
-### 本批优化点
-1. 「优化点名称」— 简述和预期收益
-2. ...
-
-### 修改内容
-- 文件: `xxx.py` — 具体改动描述
-- 文件: `yyy.py` — ...
-
-### 性能数据
-| 指标 | 优化前 | 优化后 | 改善 | 数据来源 |
-|------|------|------|------|------|
-| 推理延迟 avg (ms) | XXX | YYY | -Z% | profiling/<timestamp> |
-| 吞吐量 (samples/s) | XXX | YYY | +Z% | profiling/<timestamp> |
-
-### 精度验证
-- 连续输出 cosine: 0.9999+（min），全量测试集
-- 生成文本：与 baseline 全量匹配
-- 聚合分数相对误差: < 0.5%
-
-### 未采纳方案
-- [方案描述]：[实际效果]，[未采纳原因]
-
-### Profiling 时间戳索引
-- 优化前：`profiling/<timestamp_before>/`
-- 优化后：`profiling/<timestamp_after>/`
-```
-
-### 示例条目
-
-```markdown
-## 批次 2（YYYY-MM-DD）
-
-### 本批优化点
-1. Flat Forward — 绕过 Module.__call__ 调用栈，预期减少 ~20% 延迟
-2. 预分配 Buffer（out= 模式）— 消除运行时 empty_tensor 分配，预期 -15%
-3. 权重预转置 — 消除每次 forward 的 aten::t 开销，预期 -5%
-
-### 修改内容
-- `model/flat_encoder.py` — 新增扁平化 encoder 实现
-- `model/flat_decoder.py` — 新增扁平化 decoder 实现
-- `inference/run_infer.py` — 切换为扁平化模型
-
-### 性能数据
-| 指标 | 优化前 | 优化后 | 改善 | 数据来源 |
-|------|------|------|------|------|
-| encoder 延迟 avg | 17.8 ms | 9.7 ms | -46% | profiling/YYYYMMDD_HHMMSS |
-| 端到端吞吐量 | 56 seq/s | 103 seq/s | +84% | profiling/YYYYMMDD_HHMMSS |
-
-### 精度验证
-- encoder 输出 cosine: 0.9999+（min），全量测试集
-- 生成文本：与 baseline 全量匹配
-- 聚合分数相对误差: < 0.5%
-
-### 未采纳方案
-- StaticCache：在 NPU 上展开为更多子 kernel，比 DynamicCache 慢约 20%，已回退
-
-### Profiling 时间戳索引
-- 优化前：`profiling/YYYYMMDD_HHMMSS_before/`
-- 优化后：`profiling/YYYYMMDD_HHMMSS_after/`
-```
+日志条目格式和示例详见 [templates/optimization_log_template.md](templates/optimization_log_template.md)。
 
 ## 文档维护
 

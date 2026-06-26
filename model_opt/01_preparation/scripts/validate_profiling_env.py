@@ -14,8 +14,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Profiling 环境预检")
     parser.add_argument("--device", default="npu:0", help="目标设备")
     parser.add_argument(
-        "--output-dir", default="./profiling_output",
-        help="Profiling 输出目录",
+        "--output-dir", default="./profiling",
+        help="Profiling 输出根目录（实际输出在其下的时间戳子目录中）",
     )
     args = parser.parse_args()
 
@@ -43,7 +43,7 @@ def main() -> int:
             required = ["profile", "schedule", "tensorboard_trace_handler"]
             missing = [n for n in required if not hasattr(profiler, n)]
             if missing:
-                emit("FAIL", "profiler-api", f"缺少接口: {'', '.join(missing)}")
+                emit("FAIL", "profiler-api", f"缺少接口: {', '.join(missing)}")
                 failures += 1
             else:
                 emit("PASS", "profiler-api", "所有必需 profiler API 就绪")

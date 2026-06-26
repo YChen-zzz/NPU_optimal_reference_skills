@@ -1,58 +1,106 @@
-# Profiling 特征 → 行动映射
+# Profiling 分析推理指南
 
-## 使用方法
+脚本给出了数据和疑点，但从疑点到优化决策之间还需要推理。本文提供：
+- 信号组合的联合推理方法
+- 脚本信息不够时如何深入原始数据
+- 具体的代码级行动模式
 
-拿到 profiling 数据后，按下表逐行对照。左列是在 profiling CSV / trace 中看到的**具体特征**，右列是建议的**第一个行动**和对应原语。
+## 从疑点到优化决策的推理
 
-不需要从头到尾扫完——找到最显著的特征（占比最大 / 次数最多），执行对应行动，优化后重新 profiling，再回到这张表。
+脚本标记的每个 Suspect Signal 只是起点。做优化决策还需回答：
+1. **根因是什么**：需要结合源码理解为什么这个操作会出现
+2. **是否值得优化**：占总耗时多少、优化后其他瓶颈是否会暴露
+3. **怎么优化**：具体用什么手段，参见下方行动模式
 
-## op_statistic.csv 特征
+## 信号组合的联合推理
 
-| 看到什么 | 说明什么 | 第一个行动 | 原语 |
-|---------|---------|-----------|------|
-| 同一算子（如 Transpose）调用 800+ 次 | layout 选择不当，算子间反复转换 | 追踪这些 Transpose 来自哪些 `.permute().contiguous()` 链，统一 layout 约定使整条链消失 | 去重 |
-| Mul + Sigmoid 成对高频出现 | gating 未原地化 | `x.sigmoid_()` 替代 `torch.sigmoid(x)`；如有配套融合算子（如 `npu_swiglu`）直接替换 | 去重+复用 |
-| MemSet 1000+ 次 | 大量临时 buffer 被反复分配清零 | 定位高频分配源（通信 buffer / `torch.cat` / `F.one_hot`），改为预分配+复用 | 复用 |
-| Slice 大量出现且伴随 Transpose | `chunk` + `permute` 链 | `view` + index 替代 `chunk`+`squeeze`；检查是否可合并上游 Linear 消除 split 需求 | 去重 |
-| ConcatD 高频出现 | `torch.cat` / `all_gather` + `cat` | `all_gather_into_tensor` 替代 list-based `all_gather`；`torch.zeros`+`narrow().copy_()` 替代 `cat` | 复用 |
-| BatchMatMulV2 次数远超预期 | `einsum` 被 PyTorch 拆成多个 bmm | 改为显式 `bmm` / `matmul` 调用 | 去重 |
-| hcom_broadcast / hcom_allgather 占比 > 30% | 通信在关键路径上串行等待 | 检查每个通信操作前后是否有无依赖的计算可放到另一个 stream | 掩盖 |
-| Pow + ReduceMean + Rsqrt + Mul 成组出现 | RmsNorm 未融合 | `torch_npu.npu_rms_norm` 替代 | 去重 |
-| FlashAttentionScore 少但前后碎片多 | attention 前后处理未优化 | QKV projection 后的 reshape/permute 简化；gating sigmoid 原地化 | 去重 |
+单一信号往往含义模糊，多个信号组合才能确定方向。
 
-## kernel_details.csv 特征
+### Host-Bound + empty_tensor 占主导
 
-| 看到什么 | 说明什么 | 第一个行动 | 原语 |
-|---------|---------|-----------|------|
-| stall_ratio > 500% | device 大部分时间在等 host | 转到 operator_details 定位 host 时间花在哪（见下一表） | — |
-| 少数 kernel wait time 极大（> 10ms）| 该 kernel 前有同步操作 | trace 中找到该 kernel，检查前面是否有 `.item()` / `.to(device)` / `empty_cache()` | 去重 |
-| wait time 分布均匀（每个 kernel 都有 50-100μs 等待）| host dispatch 开销均匀分摊 | 考虑图编译（消除逐算子 dispatch）或 flat forward（绕过 Module.__call__）| 掩盖/去重 |
+step_trace 利用率低 + operator_details 中 `empty_tensor` Host Duration 占比 > 30%
 
-## operator_details.csv 特征
+→ 不是 Python 调度开销，是 **allocator 同步瓶颈**。每次 `empty()` 都可能等 device 完成才能分配。
+→ 进一步确认：`parse_operator_memory` 是否有重复同尺寸分配
+→ 行动：预分配 buffer + `out=` 写入
 
-| 看到什么 | 说明什么 | 第一个行动 | 原语 |
-|---------|---------|-----------|------|
-| `empty_tensor` Host Self Duration 占比 > 30% | allocator 同步是主要瓶颈 | 定位哪些操作触发 `empty`（`cat` / `one_hot` / 非原地算子），改为预分配 | 复用 |
-| `aten::dropout` 出现且 p=0 | 训练遗留代码在推理时白跑 | monkey-patch 或本地化去除 | 去重 |
-| `Module.__call__` 相关耗时占比 > 40% | Python 框架调度栈太深 | 考虑 flat forward（提取权重到普通数据结构，绕过 Module）| 去重 |
-| `aten::t` / `aten::transpose` Host Self Duration 高 | 权重每次 forward 都做转置 | 初始化时预转置 `.t().contiguous()`，forward 中直取 | 复用 |
+### Host-Bound + dispatch wrapper 占主导
 
-## trace_view.json 特征
+step_trace 利用率低 + operator_details 中 `aten::matmul` / `aten::linear` 等 pure host ops 占主导
 
-| 看到什么 | 说明什么 | 第一个行动 | 原语 |
-|---------|---------|-----------|------|
-| NPU 计算流有明显空泡，空泡前后分别是通信和计算 | 通信-计算未重叠 | 检查通信结果和紧接的计算之间是否有无依赖的其他计算，用 comm_stream 重叠 | 掩盖 |
-| NPU 计算流有短空泡，空泡前有 `aclnnInplaceSigmoid` 等不预期算子 | CANN 隐式同步 | 对照 NPU checklist 排查（见 `npu_checklist.md`）| 去重 |
-| 某段 NPU 空泡前有 `SynchronizeStream` | 显式 H2D/D2H 同步 | 搜索 `.item()` / `.numpy()` / `.to(device)` 调用，缓存或消除 | 复用/去重 |
-| 多个 recycle / diffusion step 间有大空泡 | `empty_cache()` 或阶段切换同步 | 确认是否可去除 `empty_cache()`（仅极端显存压力下保留）| 去重 |
+→ **Module.__call__ 调度栈**是瓶颈。每个算子都要走完整的 hook → check → dispatch 流程。
+→ 进一步确认：`parse_kernel_details` 的 wait time 是否均匀分布（每 kernel 都等 50-200μs）
+→ 行动：flat forward 绕过 Module，或图编译
 
-## 多种特征并存时的优先级
+### 利用率高 + mte_ratio >> mac_ratio
+
+step_trace 利用率高 + kernel_details 硬件单元中 mte（搬运）远大于 mac（计算）
+
+→ **Memory-Bound**：kernel 在忙但大部分时间在搬数据而非计算
+→ 进一步确认：`parse_kernel_details --filter <Top算子>` 看是否所有 shape 都 mte 高，还是只有特定 shape
+→ 如果所有 shape 都高：可能同时有过多大 tensor 导致 HBM 带宽竞争
+→ 如果只有特定 shape：该 shape 计算密度太低，考虑 padding 或换 shape
+
+### 小算子 > 50% + Block Dim=1 多 + 利用率低
+
+→ **Decode 场景的碎片化**：每 token shape 太小导致并行度不足 + dispatch 开销占比高
+→ 确认方法：kernel_details avg duration 是否极小（<20us）
+→ 行动：fp16/bf16 启用融合算子减少 kernel 数，或图编译
+
+### memory_record 高频抖动 + operator_memory 重复同尺寸分配
+
+→ **缺少 buffer 复用**：同一个计算每次都分配释放相同大小的 tensor
+→ 进一步：`parse_operator_details --filter <op>` 看 Call Stack 确认是哪行代码
+→ 行动：在 `__init__` 中预分配，forward 中通过 `out=` 复用
+
+### kernel_details 少数 kernel wait 极大（>10ms）
+
+→ 该 kernel 前有**显式同步**操作阻塞了 pipeline
+→ 看 wait 上下文中前面的 kernel 类型
+→ 常见原因：`.item()`、`.numpy()`、`.to(device)`、`empty_cache()`
+→ 行动：消除同步点，缓存结果或延迟到 batch 结束
+
+## 常见代码级行动模式
+
+| 诊断结论 | 代码行动 |
+|---------|---------|
+| Transpose 过多（layout 不一致） | 初始化时 `weight = weight.t().contiguous()`，forward 中直接用转置后的权重 |
+| 4D matmul 触发运行时 Transpose | reshape 为 3D `(B*H, S, D)` + `torch.bmm` 替代 4D `matmul`，K 存储为 `(B*H, D, S)` 省去运行时 transpose |
+| empty_tensor 过多（每次分配） | `self.buf = torch.empty(size, device=dev)` 在 init 预分配，forward 中 `torch.matmul(a, b, out=self.buf)` |
+| Module.__call__ 开销大 | 提取权重到 dict/list，写纯函数 forward 绕过 nn.Module 调度链 |
+| Mul + Sigmoid 成对高频 | `x.sigmoid_()` 原地化，或 `torch_npu.npu_swiglu(x)` 融合 |
+| torch.cat 导致 MemSet（如 KV cache） | 预分配 `(B, H, max_len, D)` buffer，每步 `cache[:,:,step,:] = new_kv` 替代 cat |
+| dropout p=0 仍有开销 | `model.layer.dropout = nn.Identity()` 或 monkey-patch 跳过 |
+| .item() / .numpy() 触发 D→H 同步 | 缓存到 list 或 device tensor，batch 结束后统一取回；禁用 Trainer 中的 nan_filter/grad_clip logging |
+| einsum 拆成多个 bmm | 改为显式 `torch.matmul` 减少算子数量 |
+| RmsNorm 手动实现碎片化 | 替换为 `torch_npu.npu_rms_norm` 或 `torch_npu.npu_add_rms_norm`（后者同时融合 residual add） |
+| 多个独立 Linear 可合并 | Q/K/V 三个 Linear 合并为一个大 MatMul + split，减少 kernel 数 |
+
+## 脚本不够时的深入方法
+
+当脚本输出信息不足以做判断时，直接读原始 CSV：
+
+| 想了解什么 | 去哪里 | 看什么 |
+|-----------|--------|--------|
+| 某算子的实际 input shape | `kernel_details.csv` | Input Shapes 列 |
+| 某次分配时系统内存有多满 | `operator_memory.csv` | Allocation Total Allocated(MB) |
+| 某算子在整个 forward 中出现的位置序列 | `kernel_details.csv` | 按 Start Time 排序，搜目标算子看它在序列中的分布 |
+| 完整的 Python 调用链 | `operator_details.csv` | Call Stack 列（分号分隔帧列表） |
+| 两个 kernel 之间的真实 gap | `kernel_details.csv` | 当前 kernel 的 Start Time - 上一个 kernel 的 (Start Time + Duration) |
+| 某个 step 的独立数据 | `kernel_details.csv` | 按 Step Id 列过滤 |
+| Level0 vs Level1 对比 | 两份 profiling | 分别运行脚本对比 Computing/Free 差异，Level1 bubble 可能被夸大 |
+
+## 多种问题并存时的优先级
+
+按收益确定性和实施风险排序：
 
 ```
-1. 图编译可行？→ 优先尝试（收益上限最高）
-2. 显式同步（.item / H2D / empty_cache）→ 消除（单点修复，收益确定）
-3. allocator 同步（empty_tensor 占比高）→ 预分配替代（收益确定）
-4. 通信串行（hcom 占比高）→ 通信-计算重叠（收益取决于可重叠的计算量）
-5. 碎片算子（Transpose / Slice / MemSet 次数多）→ 合并/消除（单点收益小但累积可观）
-6. kernel 本身慢（Compute-Bound）→ 融合算子 / 降精度（需验证精度）
+1. 显式同步（.item / .numpy / H2D / empty_cache）→ 消除（单点修复，收益确定，零风险）
+2. 图编译可行？→ 尝试（收益上限最高，但可能不兼容）
+3. allocator 同步（empty_tensor 占比高）→ 预分配（收益确定，改动较大）
+4. 框架 dispatch 开销 → flat forward（收益大，改动大）
+5. 碎片算子融合（Pow+Mean+Rsqrt / SiLU+Mul / QKV 合并）→ 融合算子或合并 Linear
+6. 通信串行（hcom 占比高）→ 通信-计算重叠（收益取决于可重叠的计算量）
+7. 数据布局（Transpose 多）→ 预转置 + 3D bmm（累积收益可观）
+8. kernel 本身慢（Compute-Bound）→ 降精度启用硬件加速（需精度验证）
 ```

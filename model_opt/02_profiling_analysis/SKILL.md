@@ -5,93 +5,97 @@ description: 分析昇腾 NPU profiling 数据以定位性能瓶颈并提出优�
 
 # NPU Profiling 分析
 
-## 分析流程
+## 核心方法论：Profiling + 源码双驱动
 
-按以下顺序逐步深入：
+Profiling 数据给出的是**现象**（哪个操作慢、耗时多少），不是原因。定位根因必须结合**功能性源码的具体实现**：
 
-1. **step_trace_time.csv** — 设备利用率全貌
-   - `Computing / (Computing + Free)` = 设备利用率
-   - 利用率 < 20% → 严重 host-bound
-2. **op_statistic.csv** — kernel 数量和类型分布
-   - Transpose 多 → 布局问题
-   - Pows+ReduceMean+Rsqrt → RmsNorm 未融合
-   - 调用次数 / (steps × layers) 反推每层调用数
-3. **kernel_details.csv** — wait time 分布
-   - stall_ratio = total_wait / total_compute
-   - avg wait/kernel
-4. **operator_details.csv** — host 侧每个操作耗时分解
-   - Host Self Duration = 纯 Python/C++ 调用开销
-   - Device Self Duration = 实际 device kernel 时间
-5. **trace_view.json** — enqueue gap + host 操作时间线
+```
+Profiling 定位现象        源码定位根因
+      ↓                      ↓
+"aten::matmul 调用 500 次"  → 为什么调用 500 次？→ 阅读 forward 实现发现循环中逐 token 调用
+"empty_tensor 大量出现"     → 谁在分配？→ 追踪到某个 layer 每次 forward 都 new 一个 buffer
+"Transpose 算子占比 30%"    → 为什么需要 transpose？→ 源码中 weight 形状与算子期望布局不一致
+```
 
-## 关键指标与告警
+**关键原则**：
 
-| 指标 | 含义 | 告警阈值 |
-|------|------|----------|
-| 设备利用率 | Computing/(Computing+Free) | < 20% 严重 |
-| stall_ratio | Wait/Compute 比 | > 500% 严重 |
-| avg wait/kernel | 每 kernel 平均等待 | > 100μs 严重 |
-| empty_tensor 次数/步 | 每个算子需分配输出 buffer | > 500 次/步 严重 |
-| 纯 host op 占比 | 无 device kernel 的 Python op 耗时比 | > 70% 严重 |
+1. **不要停在调用层**：profiling 告诉你 `aten::mm` 慢，但原因可能在上层——是谁调用的、为什么这样调用、能否换一种方式
+2. **向下追溯实现**：找到 profiling 热点对应的 Python 代码后，继续深入该函数/模块的内部实现
+3. **向上追溯调用链**：某操作调用次数异常时，追溯是哪个循环/递归产生的
+4. **区分必要 vs 冗余**：相同操作可能既有必要调用也有冗余调用，源码分析才能区分
+
+### 源码分析（根因定位）
+
+Profiling 定位到热点后，需要在源码中回答"为什么"：
+- **向上追溯**：谁调用了这个操作、循环了多少次、能否在更高层消除
+- **向下深入**：操作内部有没有不必要的分支、分配、转换
+- **全局认知**：理解模型层级结构和框架交互模式
+
+详见 [source_code_analysis.md](references/source_code_analysis.md) 获取系统性的源码分析方法。
+
+## Profiling 文件索引
+
+CANN profiler 输出以下文件，每个文件提供不同维度的信息：
+
+| 文件 | 信息维度 | 典型大小 | 关键用途 |
+|------|---------|---------|---------|
+| `step_trace_time.csv` | 每 step 的 Computing/Free/Comm 时间 | 几行 | 判断瓶颈在 host 侧还是 device 侧 |
+| `op_statistic.csv` | 按算子类型聚合的 count + 总耗时 | ~100 行 | 全局视图：哪类算子最耗时 |
+| `kernel_details.csv` | 每个 kernel 的执行时间、等待时间、硬件单元、shape | 1K-100K 行 | 最丰富的文件：硬件利用、小算子、并行度、流水 stall |
+| `operator_details.csv` | 每次算子调用的 host/device 时间 + Call Stack | 100K-20M 行 | 唯一能关联到 Python 源码行的文件 |
+| `memory_record.csv` | 按时间采样的 Reserved/Allocated 内存 | 30K-1M 行 | 内存时间线、峰值定位 |
+| `operator_memory.csv` | 每个 tensor 的 size、lifetime、分配时全局状态 | ~10K 行 | 逐 tensor 生命周期，buffer 复用分析 |
 
 ## 瓶颈分类
 
-- **Host-Bound**: 设备利用率低，Free >> Computing → 问题在 host dispatch、Python 开销
-- **Compute-Bound**: 利用率高，kernel 本身耗时大 → 优化算子或降精度
-- **Memory-Bound**: 利用率高但 kernel 吞吐远低于理论峰值 → HBM bandwidth 竞争
-  - 同时持有冗余权重（原始 + 预转置两份）导致全局带宽退化，表现为所有 kernel 均匀变慢
-  - 大 shape 算子的 data movement 时间 >> 计算时间（访存密集型算子）
-- **Allocator-Bound**: 表现类似 Host-Bound（设备空闲），但根因是 NPU allocator 触发同步
-  - allocator 频繁同步：`empty_tensor` 次数异常多、MemSet 算子大量出现 → allocator 在每次分配时阻塞等待 device 完成
-  - H2D/D2H 同步打断 pipeline：trace 中 NPU 计算流出现空泡，前后有 `.item()` / `.to(device)` / `.numpy()` 等操作
-  - 碎片化严重：`reserved >> allocated` → 池中有大量空闲碎片但不满足新请求的连续大小要求 → 考虑 `expandable_segments` 或战略性 `empty_cache`
+| 类型 | Profiling 表现 | 核心问题 |
+|------|---------------|---------|
+| **Host-Bound** | 设备利用率低（Free >> Computing） | host dispatch、Python 开销、同步 |
+| **Compute-Bound** | 利用率高，kernel 耗时大，mac_ratio 高 | 算子本身计算密集 |
+| **Memory-Bound** | 利用率高但 mte_ratio >> mac_ratio | HBM 带宽瓶颈 |
+| **Allocator-Bound** | 类似 Host-Bound 但 empty_tensor 占比高 | allocator 同步阻塞 |
 
-> **注意**: Allocator-Bound 容易与 Host-Bound 混淆——两者在 profiling 中都表现为"设备空闲"。区分方法：如果 operator_details 中 `empty_tensor` / `aten::empty` 的 Host Self Duration 占比显著，则为 Allocator-Bound；如果 Python dispatch wrapper 占比高，则为 Host-Bound。
+> Host-Bound 与 Allocator-Bound 易混淆——都表现为"设备空闲"。区分：operator_details 中 `empty_tensor` Host Duration 占比高 → Allocator-Bound；Python dispatch wrapper 占比高 → Host-Bound。
 
-## Host-Bound 根因定位
+详见 [host_bound_patterns.md](references/host_bound_patterns.md) 获取 Host-Bound 深度诊断方法。
+详见 [memory_profiling.md](references/memory_profiling.md) 获取显存峰值分析和常见陷阱。
+详见 [profiling_to_action.md](references/profiling_to_action.md) 获取"profiling 特征 → 具体行动"映射表。
 
-**关键原则**: 用 operator_details 而非 kernel_details 定位 host 时间花在哪。
+## 解析脚本
 
-1. 从 operator_details 按 Host Self Duration 排序 top 30
-2. 按类别聚合：
-   - tensor metadata ops（empty_tensor / view / as_strided）
-   - Python dispatch wrapper（aten::matmul / aten::dropout）
-   - ACL kernel launch（aclnnMm / aclnnRmsNorm）
-   - format_cast + event sync
-3. 计算各类别占比 → 找占比最大的类别
-4. 如果 tensor metadata ops > 40% → 问题是 Python 框架开销，不是算子启动
+本 skill 的 `scripts/` 目录提供 Profiling CSV 解析工具。详细使用说明见 [profiling_scripts_guide.md](references/profiling_scripts_guide.md)。
 
-## Pipeline Bubble 全局分析
+> 脚本位于本 skill 的 `scripts/` 目录，执行时需使用实际路径。以下 `$S` 代表该目录。
 
-**不要只看最大的单个 gap**，先做全局统计：
+### 典型工作流
 
-1. 用 awk/Python 统计 kernel_details 的 wait time 分布
-2. 按算子类型聚合 wait → 找占比最大的类别
-3. 计算 total_wait / total_duration = bubble ratio
+**流程 1：首次分析新 profiling**
+```
+$S/parse_step_trace.py <dir>         → 判断瓶颈侧（host or device）
+$S/parse_op_statistic.py <dir>       → 哪类算子最耗时
+$S/parse_kernel_details.py <dir>     → 硬件单元、小算子、流水 stall
+$S/parse_memory_record.py <dir>      → 内存峰值、碎片化、分配趋势
+$S/parse_operator_memory.py <dir>    → 逐 tensor 生命周期，buffer 复用机会
+```
 
-### Level0 vs Level1 区分真实 bubble
+**流程 2：深入某个可疑算子**
+```
+$S/parse_kernel_details.py <dir> --filter Transpose   → 该算子的 shape、硬件利用、性能分布
+$S/parse_operator_details.py <dir> --filter Transpose → 从哪行源码触发的（Call Stack）
+```
 
-CANN profiler Level1 在每个 kernel 前后插入 barrier → 破坏 TASK_QUEUE 流水 → Level1 看到的 bubble 大部分是 profiler 注入的。
+**流程 3：优化效果验证**
+```
+$S/diff_profiling.py <before> <after> → 算子耗时 diff + 内存峰值变化
+```
 
-验证方法：
-- Level0 重新采集（去掉 aic_metrics）
-- 对比 Level0 vs Level1 的 Computing 和 Free
-- wall-clock 延迟交叉验证
+### 注意
 
-## 跨版本对比
+- 脚本只做**数据提取和疑点标记**，不做优化决策
+- 拿到脚本输出后，结合源码分析定位根因（参见上方「核心方法论」）
+- `kernel_details.csv` 是信息量最大的文件——其他文件信息不够时回到它做深入分析
+- `operator_details.csv` 是唯一有 Call Stack 的文件——需要定位源码时用它
 
-按 op name 聚合两版 operator_details 的 count 和 host_self → 计算 delta：
-- 负值 = 改善
-- 正值 = 退化
-- 关注完全消除的 op、单次耗时变化、新增 op
+## 下一步
 
-## 跨平台公平对比（NPU vs GPU）
-
-- NPU Level1 vs GPU torch.profiler 的 overhead 不同 → bubble ratio 不可比
-- 统一到最低 overhead 配置 + 相同序列 + 相同 schedule
-- 可比指标：kernel_sum / device_span / wall-clock
-
-详见 [analysis_scripts.md](references/analysis_scripts.md) 获取分析脚本模板。
-详见 [host_bound_patterns.md](references/host_bound_patterns.md) 获取 Host-Bound 深度诊断模式。
-详见 [memory_profiling.md](references/memory_profiling.md) 获取显存峰值分析方法和常见显存陷阱。
-详见 [profiling_to_action.md](references/profiling_to_action.md) 获取"profiling 特征 → 具体行动"的快速映射表。
+分析完成后，整理优化建议清单，进入主 SKILL.md 的**确认节点 A**——向用户展示方案并等待确认后，再进入 03_optimization 实施。

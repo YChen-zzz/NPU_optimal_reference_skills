@@ -112,6 +112,42 @@ median_idx = np.argsort(lengths)[len(lengths) // 2]
 
 详见 [profiling_collection.md](references/profiling_collection.md) 获取完整代码模板和框架适配方案。
 
+### Profiling 输出路径规范
+
+所有 profiling 输出**必须**保存在用户工作目录下，禁止使用 `/tmp` 或其他临时目录：
+
+```
+<workspace>/profiling/
+├── YYYYMMDD_HHMMSS/          # 每次采集带时间戳
+│   ├── *.csv
+│   ├── trace_view.json
+│   └── ...
+├── YYYYMMDD_HHMMSS/
+└── latest -> YYYYMMDD_HHMMSS  # 软链接指向最新一次
+```
+
+**路径构造模板**：
+```python
+import os, datetime
+
+PROFILING_BASE = os.path.join(os.getcwd(), "profiling")
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+profiling_dir = os.path.join(PROFILING_BASE, timestamp)
+os.makedirs(profiling_dir, exist_ok=True)
+
+# 更新 latest 软链接
+latest_link = os.path.join(PROFILING_BASE, "latest")
+if os.path.islink(latest_link):
+    os.remove(latest_link)
+os.symlink(timestamp, latest_link)
+```
+
+**强制规则**：
+- `tensorboard_trace_handler` 的路径参数必须指向 `<workspace>/profiling/<timestamp>/`
+- 禁止使用 `/tmp`、系统临时目录或无时间戳的固定路径
+- 每次采集后更新 `latest` 软链接，方便用户直接查看最新结果
+- `profiling/` 目录已在 `.gitignore` 中排除（详见 05_engineering）
+
 ### 采集级别选择
 
 | 级别 | 内容 | 数据量 | 适用场景 |
@@ -125,7 +161,7 @@ median_idx = np.argsort(lengths)[len(lengths) // 2]
 ### 采集流程
 
 ```
-0. 环境校验（运行 scripts/validate_profiling_env.py）
+0. 环境校验（运行本 skill 的 scripts/validate_profiling_env.py）
 → 1. 确定采集场景（训练 / 推理）
 → 2. 选择采集级别（L0 / L1 / L2）
 → 3. 植入 Profiling 代码（按框架选择模板）
@@ -159,10 +195,11 @@ export CPU_AFFINITY_CONF=1    # CPU 绑核，减少调度抖动，使采集数�
 
 ### 环境预检
 
-采集前运行环境校验脚本：
+采集前运行本 skill 提供的环境校验脚本（位于本 skill 的 `scripts/validate_profiling_env.py`）：
 ```bash
-python scripts/validate_profiling_env.py --device npu:0 --output-dir ./profiling_output
+python <skill_path>/01_preparation/scripts/validate_profiling_env.py --device npu:0 --output-dir ./profiling
 ```
+> 注意：`<skill_path>` 是本 skill 所在目录的实际路径，agent 执行时需替换为真实路径。
 
 ---
 

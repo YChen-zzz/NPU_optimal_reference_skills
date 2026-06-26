@@ -12,9 +12,10 @@
 
 ## 判断方法
 
-- profiling 中 `MemSet` / `empty_tensor` 次数异常多 → 同形状内存被反复分配释放，可复用
-- 同一操作（如 `.to(device)`、`.t()`、`torch.tensor(scalar)`）在热路径中被多次执行且结果不变 → 可缓存
-- 代码中 `torch.concatenate` / `F.one_hot` 等分配中间张量 → 可用预分配 buffer 替代
+以下现象提示可以用"复用"手段优化：
+- 相同尺寸的 tensor 被反复分配释放 → 预分配 buffer，跨调用复用
+- 同一操作（如 `.to(device)`、`.t()`、`torch.tensor(scalar)`）在热路径中多次执行且结果不变 → 缓存结果
+- `torch.cat` / `F.one_hot` 等在热路径中分配中间张量 → 用预分配 buffer 替代
 
 ## 时间维度复用：预计算 + 缓存
 
