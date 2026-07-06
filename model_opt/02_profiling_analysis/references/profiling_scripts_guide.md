@@ -18,6 +18,7 @@
 | `parse_memory_record.py` | `memory_record.csv` | ~30K-1M 行 | 内存时间线，峰值定位，OOM 预判 |
 | `parse_operator_details.py` | `operator_details.csv` | ~100K-20M 行 | 单算子耗时 + 完整调用栈（流式 Top-K） |
 | `parse_operator_memory.py` | `operator_memory.csv` | ~10K 行 | 内存分配热点 |
+| `parse_trace_view.py` | `trace_view.json` | 4MB-1GB+ | 时序：host→device 下发链、device 空隙、首次编译停顿、Call stack 源码栈 |
 | `diff_profiling.py` | 两份 profiling 目录 | — | 对比两次采集的算子耗时和内存变化 |
 
 ## 通用调用方式
@@ -213,6 +214,40 @@ python parse_operator_details.py /path/to/profiling --filter aclnnMatmul aten::v
 
 ```bash
 python parse_operator_memory.py /path/to/profiling --top-k 20
+```
+
+---
+
+### parse_trace_view.py
+
+**输入**：`trace_view.json`（Chrome Trace 格式，唯一记录 host↔device 时序关系的文件）
+
+**定位**：时序分析工具。CSV 文件只有 device 侧算子的顺序，`trace_view.json` 额外提供 host 下发与 device 执行的时间关联，是分析下发链、编译停顿、流水空隙的唯一来源。文件可达 GB 级，脚本流式解析（1GB 约 5s、内存 <50MB）。
+
+**内容随采集开关变化**（脚本自动探测并在 §0 报告，不是按训练/推理区分）：
+- 始终有：device kernel（`Task Type`）+ HostToDevice 下发 flow
+- 仅 NPU / 未开 with_stack：host 侧为 CANN `AscendCL@...` 事件
+- 开 CPU activity + `with_stack`：host 侧为 `cpu_op` + `python_function`，且 `cpu_op` 带 **Call stack**（源码栈）
+
+**输出包含**：
+0. **Detected Layers**：探测到的各层事件数；若缺 cpu_op/Call stack，明确提示"需重采开启 with_stack"，不静默出空
+1. **Device Timeline**：只列含 compute 任务的 stream（span/active/busy%/kernel 数），其余通信/同步/DMA 流折叠成一行；compute 任务间的 gap 分布
+2. **Device Stalls**：≥ 阈值的空隙**按(前→后 kernel 对)聚合**，给出出现次数、累计 gap、平均、最大，按累计降序——反复出现且累计大的才值得优化，避免被大量个例淹没
+3. **Dispatch Latency**：HostToDevice flow 配对得到的下发延迟分布（avg/max/p50/p90）+ 最慢的 top-N（附最近 device kernel 名）
+4. **Online-Compile Stalls**：`opCompile` 事件按时间分布判定 **A 类**（集中在预热期 → 采集时 `skip_first` 跳过即可）还是 **B 类**（贯穿全程的每步在线编译 → 执行模式问题，需关 jit_compile / 定 shape / 图编译，非采集参数可解）
+5. **Prefetch / Prealloc Candidates**：筛选 H2D 拷贝 / 反复分配类操作（`aten::to` / `copy_` / `empty` 等）——这些**无需换算子**即可用预取/预分配/buffer 复用优化，附精简到项目代码的 Call stack
+
+**Filter 模式**（`--filter NAME`）：给定算子名，输出匹配事件的 Call stack 和 Input Dims，直接定位源码位置。
+
+**何时使用**：
+- step_trace 判定 host-bound 后，用它定位 host 侧到底在忙什么（下发 / 编译 / 同步）
+- 需要 host→device 下发链、区分首次编译（A 类，采集可解）与每步在线编译（B 类，执行模式问题）时
+- 找预取 / 预分配 / buffer 复用等**不换算子**的优化点，并用 Call stack 定位到源码
+- `operator_details.csv` 缺失但 trace_view 有 Call stack 时，作为源码定位的替代来源
+
+```bash
+python parse_trace_view.py /path/to/profiling --top-k 15 --gap-threshold 50
+python parse_trace_view.py /path/to/profiling --filter aten::addmm
 ```
 
 ---

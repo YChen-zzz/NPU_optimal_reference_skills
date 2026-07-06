@@ -32,6 +32,7 @@ Profiling 定位到热点后，需要在源码中回答"为什么"：
 - **全局认知**：理解模型层级结构和框架交互模式
 
 详见 [source_code_analysis.md](references/source_code_analysis.md) 获取系统性的源码分析方法。
+详见 [profiling_to_source.md](references/profiling_to_source.md) 获取从 profiling 现象跨接到源码的桥梁字段、组合定位漏斗，以及采集字段缺失时的降级路径。
 
 ## Profiling 文件索引
 
@@ -45,6 +46,7 @@ CANN profiler 输出以下文件，每个文件提供不同维度的信息：
 | `operator_details.csv` | 每次算子调用的 host/device 时间 + Call Stack | 100K-20M 行 | 唯一能关联到 Python 源码行的文件 |
 | `memory_record.csv` | 按时间采样的 Reserved/Allocated 内存 | 30K-1M 行 | 内存时间线、峰值定位 |
 | `operator_memory.csv` | 每个 tensor 的 size、lifetime、分配时全局状态 | ~10K 行 | 逐 tensor 生命周期，buffer 复用分析 |
+| `trace_view.json` | host↔device 时序、下发链、Call stack | 4MB-1GB+ | host-bound 成因：下发/编译/同步；源码栈（with_stack 时）|
 
 ## 瓶颈分类
 
@@ -69,11 +71,14 @@ CANN profiler 输出以下文件，每个文件提供不同维度的信息：
 
 ### 典型工作流
 
+> 分析基于 **L1** 采集数据（覆盖以下全部脚本所需文件）。若 L1 数据不足以定位优化点（如需 CANN Runtime 底层调度或 AI CPU fallback 信息），回到 Phase 1 用 **L2** 重新采集。快速收益比对则用 **L0**（见 `diff_profiling`）。
+
 **流程 1：首次分析新 profiling**
 ```
 $S/parse_step_trace.py <dir>         → 判断瓶颈侧（host or device）
 $S/parse_op_statistic.py <dir>       → 哪类算子最耗时
 $S/parse_kernel_details.py <dir>     → 硬件单元、小算子、流水 stall
+$S/parse_trace_view.py <dir>         → host→device 下发链、device 空隙、在线编译(A预热/B每步)
 $S/parse_memory_record.py <dir>      → 内存峰值、碎片化、分配趋势
 $S/parse_operator_memory.py <dir>    → 逐 tensor 生命周期，buffer 复用机会
 ```

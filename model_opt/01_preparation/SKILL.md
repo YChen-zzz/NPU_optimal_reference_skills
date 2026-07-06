@@ -150,20 +150,22 @@ os.symlink(timestamp, latest_link)
 
 ### 采集级别选择
 
-| 级别 | 内容 | 数据量 | 适用场景 |
-|------|------|--------|----------|
-| **L0**（默认） | 仅采集 NPU 活动，最小膨胀 | 小 | 快速定位热点、整体耗时分布 |
-| **L1** | CPU + NPU + 算子详情 | 中 | 分析 Host/Device 比例、算子级耗时 |
-| **L2** | L1 + 调用栈 + 内存 | 大 | 深度分析调用链、内存瓶颈 |
+三个采集级别对应全流程中不同的用途，按迭代节奏区分：
 
-> 用户未指定级别时默认使用 L0；仅当明确需要算子分析或调用栈时才升级。
+| 级别 | 内容 | 数据量 | 使用时机 |
+|------|------|--------|----------|
+| **L0** | 仅采集 NPU 活动，最小膨胀 | 小 | **性能判定基线**：项目最开始采集一次作为 baseline；每个优化阶段（profiling 分析 + 优化 + 精度确认的完整流程）结束后再采集一次，与 baseline/上一轮快速比对，判定本轮收益 |
+| **L1** | CPU + NPU + 算子详情 + 调用栈 + 内存 + AI Core 指标（覆盖全部 7 个解析脚本） | 大 | **优化分析主力**：每个优化阶段开始前采集一次，交给 Phase 2 profiling 分析模块处理，定位瓶颈与优化点 |
+| **L2** | L1 基础上增加 CANN Runtime/GE 数据 + AI CPU 数据（`data_preprocess.csv`） | 更大 | **深度下探**：与 L1 用在同一阶段（阶段开始前），仅当 L1 信息不足以定位优化点时才启用，用于排查 Runtime 底层调度开销或算子 fallback 到 AI CPU |
+
+> **快速比对用 L0，优化分析用 L1，L1 不够再上 L2。** L0 因不注入 CPU 侧 barrier，Host/Device 比例更接近真实，适合作稳定的收益判定基线；L1/L2 数据量大、含 profiler 注入开销，仅在需要定位优化点时采集。
 
 ### 采集流程
 
 ```
 0. 环境校验（运行本 skill 的 scripts/validate_profiling_env.py）
 → 1. 确定采集场景（训练 / 推理）
-→ 2. 选择采集级别（L0 / L1 / L2）
+→ 2. 选择采集级别（基线判定 L0 / 优化分析 L1 / 深度下探 L2）
 → 3. 植入 Profiling 代码（按框架选择模板）
 → 4. 设置环境变量（TASK_QUEUE_ENABLE, CPU_AFFINITY_CONF）
 → 5. 执行采集，产出 trace 文件
@@ -188,10 +190,10 @@ export CPU_AFFINITY_CONF=1    # CPU 绑核，减少调度抖动，使采集数�
 
 | 训练框架 | 接入方式 | 模板位置 |
 |---------|---------|----------|
-| 原生 PyTorch 循环 | `with torch_npu.profiler.profile(...) as prof` | profiling_collection.md §3.1–3.3 |
-| PyTorch Lightning | 自定义 Callback | profiling_collection.md §4.1 |
-| HuggingFace Trainer | 自定义 TrainerCallback | profiling_collection.md §4.2 |
-| DeepSpeed | rank 0 采集 | profiling_collection.md §4.3 |
+| 原生 PyTorch 循环 | `with torch_npu.profiler.profile(...) as prof` | profiling_collection.md §1 |
+| PyTorch Lightning | 自定义 Callback | profiling_collection.md §2.1 |
+| HuggingFace Trainer | 自定义 TrainerCallback | profiling_collection.md §2.2 |
+| DeepSpeed | 全卡采集，按 rank 分目录 | profiling_collection.md §2.3 |
 
 ### 环境预检
 
