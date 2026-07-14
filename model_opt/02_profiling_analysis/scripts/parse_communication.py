@@ -17,7 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_ascend_profiler_output
+from common import threshold, find_ascend_profiler_output
 
 
 def safe_float(val, default=0.0):
@@ -153,7 +153,7 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
     suspects = False
 
     # Wait ratio high
-    if total_elapse > 0 and total_wait / total_elapse > 0.8:
+    if total_elapse > 0 and total_wait / total_elapse > threshold("communication", "wait_dominant_ratio", 0.8):
         L.append(f"  [DEFINITE] Wait time dominates: {total_wait/total_elapse*100:.0f}% of communication time is waiting, not transmitting.")
         L.append("    → Communication is synchronization-bound, not bandwidth-bound. Check: communication-computation overlap, "
                  "rank straggler (some ranks slow → others wait), or excessive sync points.")
@@ -161,14 +161,14 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
 
     # Per-type wait ratio
     for t, agg in sorted(by_type.items(), key=lambda x: -x[1]["elapse"]):
-        if agg["elapse"] > 0 and agg["wait"] / agg["elapse"] > 0.9 and agg["count"] > 10:
+        if agg["elapse"] > 0 and agg["wait"] / agg["elapse"] > threshold("communication", "per_type_wait_ratio", 0.9) and agg["count"] > threshold("communication", "per_type_min_count", 10):
             L.append(f"  [SIGNAL] {t}: {agg['count']} ops, {agg['wait']/agg['elapse']*100:.0f}% wait time — "
                      f"cross-validate: trace_view for compute-comm overlap, check straggler ranks")
             suspects = True
 
     # Low bandwidth links
     if matrix_data and link_bw:
-        low_bw = [x for x in link_bw if x[0] < avg_bw * 0.3 and x[1] > 1]
+        low_bw = [x for x in link_bw if x[0] < avg_bw * threshold("communication", "low_bw_ratio", 0.3) and x[1] > threshold("communication", "low_bw_min_size_mb", 1)]
         if low_bw:
             L.append(f"  [SIGNAL] {len(low_bw)} links with bandwidth < 30% of average ({avg_bw:.1f} GB/s) — "
                      f"potential bottleneck links")
@@ -184,7 +184,7 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
                 total_count = sum(v[0] for v in dist.values() if isinstance(v, list) and len(v) >= 1)
                 small_count = sum(v[0] for k, v in dist.items()
                                   if isinstance(v, list) and len(v) >= 1 and safe_float(k) < 1.0)
-                if total_count > 0 and small_count / total_count > 0.3:
+                if total_count > 0 and small_count / total_count > threshold("communication", "small_packet_ratio", 0.3):
                     L.append(f"  [SIGNAL] {link_type}: {small_count/total_count*100:.0f}% small packets (<1MB) — "
                              f"cross-validate: consider batching to reduce small-packet overhead")
                     suspects = True

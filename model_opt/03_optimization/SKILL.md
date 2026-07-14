@@ -64,7 +64,7 @@ description: 在昇腾 NPU 上实施模型调优。当用户要求优化性能�
 | [npu_checklist.md](references/npu_checklist.md) | 接到新项目时做首次静态代码扫描，不依赖 profiling |
 | [npu_operator_reference.md](references/npu_operator_reference.md) | 需要查找 NPU 融合算子的具体 API 签名和注意事项时 |
 | [decode_optimization.md](references/decode_optimization.md) | 自回归 decode 场景的性能问题时 |
-| [parallel_design.md](references/parallel_design.md) | 单卡 OOM 需要设计多卡并行方案时 |
+| [parallel_design.md](references/parallel_design.md) | profiling 显示投影峰值仍 > 80% HBM、或 compute-bound 到顶、或已多卡但效率低时 |
 | [training_tuning.md](references/training_tuning.md) | 训练场景的 OS 级调优（TASK_QUEUE、CPU 绑核、tcmalloc）时 |
 
 ## 通用原则

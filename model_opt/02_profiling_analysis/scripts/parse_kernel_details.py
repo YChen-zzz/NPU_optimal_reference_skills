@@ -23,7 +23,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_ascend_profiler_output, stream_csv, safe_float, format_duration_ms
+from common import threshold, find_ascend_profiler_output, stream_csv, safe_float, format_duration_ms
 
 
 def parse(profiling_dir: str, rank=None, top_k: int = 15,
@@ -69,11 +69,15 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     # Suspect kernels: high duration but low compute ratio (both core types)
     suspect_heap = []
 
-    # AI_CPU fallback tracking
-    aicpu_kernels = []  # (dur, name, op_type, shapes)
+    # AI_CPU fallback tracking (exclude communication ops — they run on AI CPU by design)
+    aicpu_kernels = []  # (dur, name, op_type, shapes) — non-comm only
+    aicpu_comm_count = 0  # communication ops on AI CPU (expected, not a problem)
+    COMM_KEYWORDS = tuple(threshold("kernel_details", "comm_keywords",
+                     ["broadcast", "allgather", "alltoall", "allreduce", "hcom", "send", "recv", "reducescatter"]))
 
     # Wait time distribution buckets
-    wait_buckets = {"<100us": 0, "100-500us": 0, "500-2000us": 0, ">2000us": 0}
+    _wb = threshold("kernel_details", "wait_buckets_us", [100, 500, 2000])
+    wait_buckets = {f"<{_wb[0]}us": 0, f"{_wb[0]}-{_wb[1]}us": 0, f"{_wb[1]}-{_wb[2]}us": 0, f">{_wb[2]}us": 0}
 
     # High-wait kernels with context
     all_kernels = []
@@ -108,7 +112,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             if cube_util > 0:
                 cube_util_values.append(cube_util)
             # Suspect: high duration but compute ratio low
-            if dur > 10 and mac_ratio < 0.2:
+            if dur > threshold("kernel_details", "suspect_min_duration_us", 10) and mac_ratio < threshold("kernel_details", "suspect_mac_ratio", 0.2):
                 entry = (dur, total_rows, name, core, mac_ratio,
                          mte1_ratio + mte2_ratio, row.get("Input Shapes", ""), block_dim)
                 if len(suspect_heap) < top_k:
@@ -127,7 +131,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             aiv_mte3_sum += aiv_mte3_ratio
             aiv_scalar_sum += aiv_scalar_ratio_val
             # Suspect: high duration but vec ratio low
-            if dur > 10 and vec_ratio < 0.05:
+            if dur > threshold("kernel_details", "suspect_min_duration_us", 10) and vec_ratio < threshold("kernel_details", "suspect_vec_ratio", 0.05):
                 entry = (dur, total_rows, name, core, vec_ratio,
                          aiv_mte2_ratio + aiv_mte3_ratio, row.get("Input Shapes", ""), block_dim)
                 if len(suspect_heap) < top_k:
@@ -136,7 +140,11 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
                     heapq.heapreplace(suspect_heap, entry)
 
         elif "AI_CPU" in core:
-            aicpu_kernels.append((dur, name, op_type, row.get("Input Shapes", "")))
+            low_type = op_type.lower()
+            if any(kw in low_type for kw in COMM_KEYWORDS):
+                aicpu_comm_count += 1
+            else:
+                aicpu_kernels.append((dur, name, op_type, row.get("Input Shapes", "")))
 
         # Small kernel
         if dur < small_threshold and dur > 0:
@@ -147,9 +155,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         # Block Dim
         if block_dim == 1:
             block_dim_buckets["1"] += 1
-        elif block_dim <= 8:
+        elif block_dim <= threshold("kernel_details", "block_dim_buckets", [8, 28])[0]:
             block_dim_buckets["2-8"] += 1
-        elif block_dim <= 28:
+        elif block_dim <= threshold("kernel_details", "block_dim_buckets", [8, 28])[1]:
             block_dim_buckets["9-28"] += 1
         else:
             block_dim_buckets["29+"] += 1
@@ -173,8 +181,8 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     # Detect fusible sequences: consecutive small kernels with high cumulative time
     fusible_sequences = []  # (total_dur, count, start_idx, op_types)
     i = 0
-    SMALL_THRESH = 10.0  # us
-    MIN_LEN = 5
+    SMALL_THRESH = threshold("kernel_details", "fusible_small_us", 10.0)  # us
+    MIN_LEN = threshold("kernel_details", "fusible_min_length", 5)
     while i < len(all_kernels):
         if all_kernels[i]["dur"] > 0 and all_kernels[i]["dur"] < SMALL_THRESH:
             j = i
@@ -183,7 +191,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
                 seq_total += all_kernels[j]["dur"]
                 j += 1
             seq_len = j - i
-            if seq_len >= MIN_LEN and seq_total > 100:
+            if seq_len >= MIN_LEN and seq_total > threshold("kernel_details", "fusible_min_total_us", 100):
                 types = [all_kernels[k]["type"] for k in range(i, j)]
                 fusible_sequences.append((seq_total, seq_len, i, types))
             i = j
@@ -202,7 +210,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         pct = info["dur_us"] / total_dur_us * 100 if total_dur_us > 0 else 0
         lines.append(f"  {core}: {info['count']:,} kernels, {info['dur_us']/1000:.1f}ms ({pct:.1f}%)")
     if aicpu_kernels:
-        lines.append(f"  ⚠ AI_CPU detected: {len(aicpu_kernels)} kernels — see §3 for details")
+        lines.append(f"  ⚠ Non-comm AI_CPU detected: {len(aicpu_kernels)} kernels — see §3 for details")
+    if aicpu_comm_count:
+        lines.append(f"  ({aicpu_comm_count} communication ops on AI_CPU — expected, not a problem)")
     lines.append("")
 
     # --- 2. Hardware Unit Utilization ---
@@ -215,9 +225,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"    scalar:         {aic_scalar_sum/aic_kernels:.3f}")
         avg_mac = aic_mac_sum / aic_kernels
         avg_mte = (aic_mte1_sum + aic_mte2_sum) / aic_kernels
-        if avg_mte > avg_mac * 1.5:
+        if avg_mte > avg_mac * threshold("kernel_details", "hw_dominance_ratio", 1.5):
             lines.append(f"    → Memory-dominated: mte ({avg_mte:.3f}) >> mac ({avg_mac:.3f})")
-        elif avg_mac > avg_mte * 1.5:
+        elif avg_mac > avg_mte * threshold("kernel_details", "hw_dominance_ratio", 1.5):
             lines.append(f"    → Compute-dominated: mac ({avg_mac:.3f}) >> mte ({avg_mte:.3f})")
     if aiv_kernels > 0:
         lines.append(f"  AI_VECTOR_CORE ({aiv_kernels} kernels):")
@@ -228,7 +238,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     if cube_util_values:
         avg_cube = sum(cube_util_values) / len(cube_util_values)
         min_cube = min(cube_util_values)
-        low_util_count = sum(1 for v in cube_util_values if v < 50)
+        low_util_count = sum(1 for v in cube_util_values if v < threshold("kernel_details", "cube_low_util", 50))
         lines.append(f"  Cube utilization: avg={avg_cube:.1f}%, min={min_cube:.1f}%, "
                      f"low(<50%)={low_util_count}/{len(cube_util_values)}")
     if aic_kernels == 0 and aiv_kernels == 0:
@@ -237,8 +247,8 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
 
     # --- 3. AI CPU Fallback [DEFINITE] ---
     if aicpu_kernels:
-        lines.append("## 3. AI CPU Fallback [DEFINITE]")
-        lines.append("  These ops have no AI Core implementation — consider switching dtype or equivalent API.")
+        lines.append("## 3. AI CPU Fallback (non-comm) [DEFINITE]")
+        lines.append("  Non-communication ops running on AI CPU (no AI Core impl). Communication ops excluded — they run on AI CPU by design.")
         aicpu_total = sum(d for d, _, _, _ in aicpu_kernels)
         lines.append(f"  Count: {len(aicpu_kernels)}  |  Total: {aicpu_total/1000:.1f}ms")
         aicpu_sorted = sorted(aicpu_kernels, key=lambda x: -x[0])
@@ -270,7 +280,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         bar = "█" * int(pct / 3)
         lines.append(f"  Dim {bucket:>5}: {count:>6} ({pct:>5.1f}%) {bar}")
     low_par = block_dim_buckets["1"]
-    if low_par / total_rows > 0.1:
+    if low_par / total_rows > threshold("kernel_details", "low_parallelism_ratio", 0.1):
         lines.append(f"  → {low_par} kernels with Block Dim=1: shape may be too small for parallelism")
     lines.append("")
 

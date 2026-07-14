@@ -123,6 +123,21 @@ communication.json 中 Wait Time 占总通信时间 >80% + step_trace Communicat
 
 ---
 
+### Projected peak > 80% HBM after waste elimination
+
+operator_memory 的 Parallelism Trigger 分析显示:消除短命大 tensor(waste)后,投影峰值仍 > 80% HBM
+
+→ **单卡真正放不下**(不是浪费导致,是必要数据太大)
+→ 分析模式: 差异对比(waste vs essential 的分类)
+→ 行动: **此处 profiling 分析到头了**——需要转入源码分析:
+  1. 读 parallel_design.md 理解切分原则
+  2. 用 operator_details Call Stack 定位大 tensor 的源码位置
+  3. 从计算结构判断哪些维度可切
+  4. 切分后重新 profiling 验证
+→ 注意: 不要在 profiling 层面试图决定怎么切——切分方案依赖计算图结构,只有源码能回答
+
+---
+
 ## 脚本信息不够时的深入方法
 
 当脚本输出不足以做判断时，直接读原始文件:

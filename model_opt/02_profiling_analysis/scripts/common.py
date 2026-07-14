@@ -24,6 +24,27 @@ import os
 from pathlib import Path
 from typing import List, Dict, Optional, Iterator
 
+_THRESHOLDS_CACHE = None
+
+
+def load_thresholds() -> dict:
+    """Load thresholds.py once and cache. Returns nested dict."""
+    global _THRESHOLDS_CACHE
+    if _THRESHOLDS_CACHE is not None:
+        return _THRESHOLDS_CACHE
+    try:
+        from thresholds import THRESHOLDS
+        _THRESHOLDS_CACHE = THRESHOLDS
+    except ImportError:
+        _THRESHOLDS_CACHE = {}
+    return _THRESHOLDS_CACHE
+
+
+def threshold(script: str, key: str, default=None):
+    """Get a threshold value: thresholds.py THRESHOLDS[script][key], with fallback default."""
+    cfg = load_thresholds()
+    return cfg.get(script, {}).get(key, default)
+
 
 def find_ascend_profiler_output(profiling_dir: str, rank: Optional[int] = None) -> Path:
     """Locate the ASCEND_PROFILER_OUTPUT directory within a profiling tree."""

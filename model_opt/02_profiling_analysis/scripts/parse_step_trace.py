@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_ascend_profiler_output, read_csv_all, safe_float
+from common import threshold, find_ascend_profiler_output, read_csv_all, safe_float
 
 
 def parse(profiling_dir: str, rank=None) -> str:
@@ -59,9 +59,9 @@ def parse(profiling_dir: str, rank=None) -> str:
             lines.append(f"  Comm:      {comm_total/1000:.1f} ms ({comm_total/grand_total*100:.1f}%)")
         lines.append("")
 
-        if util < 20:
+        if util < threshold("step_trace", "severe_host_bound_util", 20):
             lines.append("  ** SEVERE Host-Bound: device idle >80% of time, bottleneck is on host side **")
-        elif util < 50:
+        elif util < threshold("step_trace", "moderate_host_bound_util", 50):
             lines.append("  ** Moderate Host-Bound: device idle >50%, significant host-side overhead **")
         else:
             lines.append(f"  Bottleneck is on device side (utilization {util:.0f}%)")
@@ -111,7 +111,7 @@ def parse(profiling_dir: str, rank=None) -> str:
         if len(step_utils) > 1:
             util_min = min(step_utils)
             util_max = max(step_utils)
-            if util_max - util_min > 20:
+            if util_max - util_min > threshold("step_trace", "step_util_variance", 20):
                 lines.append(f"  [SIGNAL] Step utilization variance: {util_min:.1f}% ~ {util_max:.1f}%")
                 lines.append(f"    Some steps significantly less efficient — cross-validate: check for warmup/compilation/dynamic shape")
                 suspects_found = True
@@ -120,7 +120,7 @@ def parse(profiling_dir: str, rank=None) -> str:
         if len(step_totals) > 1:
             total_min = min(step_totals)
             total_max = max(step_totals)
-            if total_max > total_min * 2:
+            if total_max > total_min * threshold("step_trace", "step_duration_spread", 2.0):
                 lines.append(f"  [SIGNAL] Step duration spread: {total_min/1000:.1f}ms ~ {total_max/1000:.1f}ms ({total_max/total_min:.1f}x)")
                 lines.append(f"    Large variation — cross-validate: check trace_view whether compile events cluster in outlier steps")
                 suspects_found = True

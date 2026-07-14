@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_ascend_profiler_output, stream_csv, safe_float
+from common import threshold, find_ascend_profiler_output, stream_csv, safe_float
 
 
 def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10) -> str:
@@ -124,7 +124,7 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         lines.append(f"  Min gap: {min_frag:,.0f} MB")
         lines.append(f"  Max gap: {max_frag:,.0f} MB")
         lines.append(f"  Avg gap: {avg_frag:,.0f} MB")
-        if max_frag > 1000:
+        if max_frag > threshold("memory_record", "frag_gap_mb", 1000):
             lines.append(f"  → Large gap ({max_frag:,.0f}MB) suggests significant pool fragmentation or over-reservation")
         lines.append("")
 
@@ -184,21 +184,21 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
 
     # Growth trend
     n_records = len(reserved_records)
-    if n_records > 20:
+    if n_records > threshold("memory_record", "growth_min_records", 20):
         early = res_values[:n_records // 10]
         late = res_values[-(n_records // 10):]
         early_avg = sum(early) / len(early)
         late_avg = sum(late) / len(late)
         growth = late_avg - early_avg
-        if growth > 100:
+        if growth > threshold("memory_record", "growth_mb", 100):
             lines.append(f"  - [SIGNAL] Reserved growth trend: early avg {early_avg:,.0f}MB → late avg {late_avg:,.0f}MB (+{growth:,.0f}MB)")
             lines.append(f"    Cross-validate: check operator_memory for unreleased tensor accumulation")
             suspects_found = True
 
     # High churn
     if jumps:
-        large_jumps = [j for j in jumps if j[0] > 50]
-        if len(large_jumps) > 20:
+        large_jumps = [j for j in jumps if j[0] > threshold("memory_record", "churn_jump_mb", 50)]
+        if len(large_jumps) > threshold("memory_record", "churn_count", 20):
             lines.append(f"  - [SIGNAL] High memory churn: {len(large_jumps)} jumps > 50MB")
             lines.append(f"    Cross-validate: check operator_memory for repeated same-size alloc → buffer reuse opportunity")
             suspects_found = True
@@ -211,12 +211,12 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         early_frag_avg = sum(early_frag) / len(early_frag)
         late_frag_avg = sum(late_frag) / len(late_frag)
         frag_growth = late_frag_avg - early_frag_avg
-        if frag_growth > 50:
+        if frag_growth > threshold("memory_record", "frag_growth_mb", 50):
             lines.append(f"  - [SIGNAL] Fragmentation growing: early gap avg {early_frag_avg:,.0f}MB → late {late_frag_avg:,.0f}MB (+{frag_growth:,.0f}MB)")
             suspects_found = True
 
     # OOM risk
-    if max_res > 60000:
+    if max_res > threshold("memory_record", "oom_risk_mb", 60000):
         lines.append(f"  - [DEFINITE] Peak reserved {max_res:,.0f}MB — close to HBM capacity, OOM risk")
         suspects_found = True
 
