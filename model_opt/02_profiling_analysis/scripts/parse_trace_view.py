@@ -250,10 +250,10 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     L.append(f"  python_function frames:       {caps.get('python_function', 0):,}")
     L.append(f"  fwdbwd links:                 {caps.get('fwdbwd', 0):,}")
     if caps.get("cpu_op", 0) == 0:
-        L.append("  ⚠ 未检测到 cpu_op/Call stack（采集未开 CPU activity + with_stack）——")
-        L.append("    仅能给出 host→device 下发时序，无法直接映射源码；源码定位需重采开启 with_stack。")
+        L.append("  ⚠ No cpu_op/Call stack detected (CPU activity + with_stack not enabled) —")
+        L.append("    Only host→device dispatch timeline available; source mapping requires re-collection with with_stack enabled.")
     elif not has_callstack:
-        L.append("  ⚠ 有 cpu_op 但 Call stack 为空（with_stack 未开）——仅算子级 host 耗时，无源码栈。")
+        L.append("  ⚠ cpu_op present but Call stack empty (with_stack not enabled) — host op timing only, no source stack.")
     L.append("")
 
     # --- 1. Device timeline (compute streams only; fold non-compute) ---
@@ -272,7 +272,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     if other_streams:
         tot = sum(v[4] for v in other_streams.values())
         L.append(f"  + {len(other_streams)} non-compute streams folded "
-                 f"({tot:,} tasks: 通信/同步/DMA — NOTIFY/SDMA/EVENT/AI_CPU)")
+                 f"({tot:,} tasks: comm/sync/DMA — NOTIFY/SDMA/EVENT/AI_CPU)")
     L.append("  Gap distribution (between consecutive COMPUTE tasks per stream):")
     for b, c in gap_buckets.items():
         L.append(f"    {b:>9}: {c:,}")
@@ -280,7 +280,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
 
     # --- 2. Stall points aggregated by kernel pair ---
     L.append(f"## 2. Device Stalls (gap >= {gap_threshold_us:.0f}us, aggregated by kernel pair)")
-    L.append("  同一位置反复出现的空隙合并计数；按累计 gap 降序——重复多、累计大的才值得优化。")
+    L.append("  Stalls at the same kernel pair aggregated; sorted by cumulative gap — repeated and large ones deserve optimization.")
     if stall_agg:
         pairs = sorted(stall_agg.items(), key=lambda x: -x[1][1])
         L.append(f"  {'Count':>6} {'SumGap':>10} {'AvgGap':>9} {'MaxGap':>9}  {'After -> Before kernel'}")
@@ -302,19 +302,26 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             disp_lat.sort()
             p50 = disp_lat[len(disp_lat)//2]
             p90 = disp_lat[int(len(disp_lat)*0.9)]
-            L.append(f"  p50={p50/1000:.1f}us  p90={p90/1000:.1f}us  (p90>>p50 表示下发积压不均)")
+            L.append(f"  p50={p50/1000:.1f}us  p90={p90/1000:.1f}us  (p90>>p50 indicates uneven dispatch backlog)")
         if disp_top:
-            L.append("  Top dispatch latency (≈ 最近的 device kernel 名，供定位下发点)：")
+            L.append("  Top dispatch latency (nearest device kernel name for locating dispatch point):")
             for lat, dev_name in sorted(disp_top, key=lambda x: -x[0]):
                 L.append(f"    {lat/1000:>8.1f}us  ≈ {str(dev_name)[:40]}")
     else:
         L.append("  No HostToDevice flow found.")
     L.append("")
 
-    # --- 4. Online-compile stalls (classify warmup vs per-step) ---
+    # --- 4. Suspect Signals (diagnostic: compile classification + prefetch candidates) ---
+    sec_num = 4
+    has_suspects = bool(acl_compile) or bool(host_prefetch)
+    if has_suspects or (caps.get("cpu_op", 0) and has_callstack):
+        L.append(f"## {sec_num}. Suspect Signals")
+        L.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, cross-validate with other dimensions")
+        L.append("")
+
     if acl_compile:
-        L.append("## 4. Online-Compile Stalls (AscendCL@opCompile / aclopCompileAndExecute)")
-        L.append(f"  total compile time: {format_duration_ms(acl_compile_dur/1000)}  events: {sum(acl_compile.values()):,}")
+        L.append(f"  [DEFINITE] Online-Compile ({sum(acl_compile.values()):,} events, "
+                 f"total {format_duration_ms(acl_compile_dur/1000)})")
         dev_min = min((v[1] for v in compute_streams.values() if v[1] is not None), default=None)
         dev_max = max((v[2] for v in compute_streams.values() if v[2] is not None), default=None)
         early_frac = None
@@ -323,28 +330,26 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             early = sum(1 for t in compile_ts if (t - dev_min) / span < 0.2)
             early_frac = early / len(compile_ts)
         if early_frac is not None and early_frac >= 0.8:
-            L.append(f"  分布：{early_frac*100:.0f}% 集中在前 20% 时间窗 → **A 类：预热首次编译**。")
-            L.append("  → 属采集问题：schedule 增大 skip_first 跳过预热步即可，非真实瓶颈。")
+            L.append(f"    Distribution: {early_frac*100:.0f}% in first 20% of timeline → **Type A: warmup compilation**.")
+            L.append("    → Collection issue: increase schedule skip_first to skip warmup — not a real bottleneck.")
         elif early_frac is not None:
-            L.append(f"  分布：仅 {early_frac*100:.0f}% 在前 20%，其余贯穿全程 → **B 类：每步在线编译**。")
-            L.append("  → 真实瓶颈，非采集参数可解：检查 jit_compile 是否关闭、shape 是否动态导致反复重编、"
-                     "或改用图编译；aclop 单算子在线编译路径应避免。")
+            L.append(f"    Distribution: only {early_frac*100:.0f}% in first 20%, rest spans entire timeline → **Type B: per-step online compilation**.")
+            L.append("    → Real bottleneck, not solvable by collection params: check if jit_compile is off, whether dynamic shapes cause re-compilation,"
+                     "or switch to graph compilation; aclop per-op online compile path should be avoided.")
         else:
-            L.append("  → 无法判定分布（缺 device 时间基准）。")
+            L.append("    → Cannot determine distribution (missing device time baseline).")
         L.append("")
 
-    # --- 5. Prefetch / prealloc candidates (H2D copy & repeated alloc) + call stack ---
     if host_prefetch:
-        L.append("## 5. Prefetch / Prealloc Candidates (H2D copy & alloc ops)")
-        L.append("  这些操作无需换算子即可优化（预取 / 预分配 / buffer 复用）；Call stack 指向修改位置。")
+        L.append("  [SIGNAL] Prefetch / Prealloc Candidates (H2D copy & alloc ops)")
+        L.append("    These ops can be optimized without replacing operators (prefetch / pre-allocate / buffer reuse); Call stack points to code location.")
         for dn, name, cs in sorted(host_prefetch, key=lambda x: -x[0]):
-            L.append(f"  - {name}  host={dn/1000:.1f}us")
+            L.append(f"    - {name}  host={dn/1000:.1f}us")
             for frame in condense_stack(cs):
-                L.append(f"      {frame[:110]}")
+                L.append(f"        {frame[:110]}")
         L.append("")
-    elif caps.get("cpu_op", 0) and has_callstack:
-        L.append("## 5. Prefetch / Prealloc Candidates")
-        L.append("  未发现明显的 H2D 拷贝 / 反复分配类操作（aten::to / copy_ / empty 等）。")
+    elif caps.get("cpu_op", 0) and has_callstack and not acl_compile:
+        L.append("  No significant H2D copy or repeated allocation ops found (aten::to / copy_ / empty etc.).")
         L.append("")
 
     return "\n".join(L)

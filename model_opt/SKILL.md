@@ -20,9 +20,9 @@ description: 指导将深度学习模型适配到昇腾 NPU 并进行性能优�
 
 Profiling 采集、精度对比等操作必须遵循统一规范，确保一致性和可复现。详见 [references/standardized_operations.md](references/standardized_operations.md)。
 
-## 优化三原语
+## 优化四维度
 
-所有具体的性能优化手段，本质上只做三件事：**去重**（消除重复/无效的工作）、**复用**（对已有资源重复利用而非重新创建）、**掩盖**（用并行让延迟不可见）。详见 [03_optimization/SKILL.md](03_optimization/SKILL.md)。
+所有具体的性能优化手段，本质上只做四件事：**去重**（消除重复/无效的工作）、**复用**（对已有资源重复利用而非重新创建）、**掩盖**（用并行让延迟不可见）、**替换**（用硬件更友好的等价实现）。详见 [03_optimization/SKILL.md](03_optimization/SKILL.md)。
 
 ## 全流程
 
@@ -91,6 +91,7 @@ Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方�
 | Phase 3 | [03_optimization/SKILL.md](03_optimization/SKILL.md) | 实施具体优化手段 |
 | Phase 4 | [04_accuracy_assurance/SKILL.md](04_accuracy_assurance/SKILL.md) | 验证精度、调试精度问题 |
 | Phase 5 | [05_engineering/SKILL.md](05_engineering/SKILL.md) | 代码管理、日志、版本控制 |
+| 案例库 | [06_evidence_db/schema.md](06_evidence_db/schema.md) | 优化案例的记录格式(schema 定义；案例数据存在项目工作目录 `evidence_db/` 下) |
 
 ## 各阶段要点
 
@@ -102,7 +103,7 @@ Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方�
 
 **★ 确认节点 A**：向用户展示优化方案清单（每条含内容、预期收益、风险等级），询问方案是否合适、有无需要跳过的优化点。仅实施用户确认的条目。
 
-**Phase 3 优化实施**：根据用户确认的优化清单，用三原语（去重、复用、掩盖）框架选择具体手段。图编译优先尝试，失败后走 eager 路线。每条优化后做 Level 1 快速精度验证。
+**Phase 3 优化实施**：根据用户确认的优化清单，用四维度（去重、复用、掩盖、替换）框架选择具体手段。图编译优先尝试，失败后走 eager 路线。每条优化后做 Level 1 快速精度验证。
 
 **Phase 4 精度验证 + Profiling 确认**：本批（本轮优化阶段）所有优化完成后，**必须依次完成**：
 1. 全量精度验证（Level 2）——与原始 baseline 对比，确认精度无退化
@@ -111,7 +112,7 @@ Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方�
 
 **★ 确认节点 B**：向用户展示本批总结（优化点、性能收益、精度数据、未采纳方案），询问是否确认提交。用户确认后才执行 git commit。
 
-**Phase 5 工程化提交**：全部工作在 optimize/ 分支进行，每批一个 commit，用户确认后合入 main。维护优化日志记录每批的优化点、修改、效果和未采纳方案。
+**Phase 5 工程化提交**：全部工作在 optimize/ 分支进行，每批一个 commit，用户确认后合入 main。维护优化日志记录每批的优化点、修改、效果和未采纳方案。提交前按 [06_evidence_db/schema.md](06_evidence_db/schema.md) 将本轮优化案例记录到项目工作目录的 `evidence_db/` 下（与 `profiling/` 同级）。
 
 ## 迭代退出条件
 

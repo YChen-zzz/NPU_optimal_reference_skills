@@ -68,14 +68,6 @@ NPU 提供将已知算子模式合并为单 kernel 的融合算子（如 `npu_rm
 
 形状元数据存为 device Tensor → `.numpy()` 触发 D2H → 改用 Python tuple。条件永远为空的 `torch.where` → Python 层跳过。先在 NPU 做 dtype cast 再搬 CPU → 先搬 CPU 再 cast。
 
-### NPU 算子实现差异
-
-同一个 PyTorch API 在 NPU 上可能拆成更多步骤。诊断方法：profiling 中看到不预期的算子（如 `aclnnInplaceSigmoid` 出现在 `F.one_hot` 路径中）。寻找语义等价但 kernel 数更少的写法：
-
-- `prod(dim)` → `sum(dim) == shape[dim]`（ReduceProd → ReduceSum）
-- `tensor[row_idx, col_idx] = val` → `view(-1).scatter_()`（逐元素 host 下发 → 单次设备操作）
-- `F.one_hot(x).to(float)` → `zeros().scatter_()`（sigmoid kernel → 直接写入）
-
 ## 框架调度层消除
 
 每次 `nn.Module.__call__` 有固定 Python 开销（hook 检查、参数验证、dispatcher）。N 层 × M 子模块 = N×M 次调用。

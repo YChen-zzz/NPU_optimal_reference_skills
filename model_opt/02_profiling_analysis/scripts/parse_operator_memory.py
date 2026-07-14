@@ -130,12 +130,13 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
 
     # --- Suspect Signals ---
     lines.append("## Suspect Signals")
+    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
     suspects_found = False
 
     repeated = [(key, count) for key, count in size_op_count.items() if count > 10]
     repeated.sort(key=lambda x: -x[1])
     if repeated:
-        lines.append("  - Repeated same-size allocations (buffer reuse opportunity):")
+        lines.append("  - [DEFINITE] Repeated same-size allocations (buffer reuse opportunity):")
         for key, count in repeated[:8]:
             name_part, size_part = key.rsplit("|", 1)
             lines.append(f"    {name_part}: {size_part}KB × {count} times")
@@ -144,7 +145,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
     if short_lived_large:
         total_short_kb = sum(s for s, _, _ in short_lived_large)
         if total_short_kb > 10000:
-            lines.append(f"  - Short-lived large tensor churn: {len(short_lived_large)} tensors, "
+            lines.append(f"  - [DEFINITE] Short-lived large tensor churn: {len(short_lived_large)} tensors, "
                          f"cumulative {total_short_kb/1024:.0f}MB")
             lines.append(f"    Allocating and immediately freeing — pre-allocation would eliminate this overhead")
             suspects_found = True
@@ -153,7 +154,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
         top_op_total = op_sorted[0][1]["total_kb"]
         total_all = sum(info["total_kb"] for _, info in op_sorted)
         if total_all > 0 and top_op_total / total_all > 0.5:
-            lines.append(f"  - Single op dominates memory: {op_sorted[0][0]} "
+            lines.append(f"  - [SIGNAL] Single op dominates memory: {op_sorted[0][0]} "
                          f"({top_op_total/1024:.0f}MB, {top_op_total/total_all*100:.0f}% of total)")
             suspects_found = True
 

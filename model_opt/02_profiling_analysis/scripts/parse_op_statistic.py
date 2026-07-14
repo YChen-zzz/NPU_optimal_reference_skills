@@ -59,11 +59,12 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
 
     # Statistical analysis
     lines.append("## Suspect Signals")
+    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
 
     # 1. Concentration: how focused is the bottleneck
     top3_us = sum(r["_total_us"] for r in rows_sorted[:3])
     top3_ratio = top3_us / total_us * 100 if total_us > 0 else 0
-    lines.append(f"- Top-3 concentration: {top3_ratio:.1f}% of total device time")
+    lines.append(f"- [DEFINITE] Top-3 concentration: {top3_ratio:.1f}% of total device time")
     if top3_ratio > 80:
         lines.append(f"  → Bottleneck highly concentrated — optimizing top ops has strong leverage")
 
@@ -76,9 +77,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
         move_ops = [r.get("OP Type", "") for r in rows_sorted
                     if any(kw.lower() in r.get("OP Type", "").lower() for kw in move_keywords)
                     and r["_total_us"] > 0]
-        lines.append(f"- Data movement overhead: {move_ratio:.1f}% ({move_us/1000:.1f}ms)")
+        lines.append(f"- [SIGNAL] Data movement overhead: {move_ratio:.1f}% ({move_us/1000:.1f}ms)")
         lines.append(f"  ops: {', '.join(move_ops[:8])}")
-        lines.append(f"  → These are not compute — pure format/layout conversion cost")
+        lines.append(f"  → Layout/format conversion cost. Cross-validate: kernel_details for mte dominance, operator_details for source location")
 
     # 3. High-count low-avg ops (fragmentation signal)
     if total_count > 0:
@@ -87,16 +88,16 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
                       for r in rows_sorted
                       if r["_count"] > avg_count_per_type * 3 and r["_avg_us"] < 10]
         if fragmented:
-            lines.append(f"- High-count low-duration ops (fragmentation signal):")
+            lines.append(f"- [SIGNAL] High-count low-duration ops (fragmentation signal):")
             for name, count, avg in fragmented[:5]:
-                lines.append(f"  {name}: count={count}, avg={avg:.1f}us — may benefit from batching/elimination")
+                lines.append(f"  {name}: count={count}, avg={avg:.1f}us — cross-validate: potential for fusion/batching")
 
     # 4. Low-count high-avg ops (heavy single ops)
     heavy = [(r.get("OP Type", ""), r["_count"], r["_avg_us"], r["_total_us"])
              for r in rows_sorted
              if r["_count"] <= 10 and r["_avg_us"] > 100 and r["_total_us"] / total_us > 0.01]
     if heavy:
-        lines.append(f"- Heavy single-invocation ops:")
+        lines.append(f"- [SIGNAL] Heavy single-invocation ops:")
         for name, count, avg, total in heavy[:5]:
             lines.append(f"  {name}: count={count}, avg={avg:.0f}us — large shape or expensive kernel")
 

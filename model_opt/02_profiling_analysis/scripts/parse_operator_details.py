@@ -113,10 +113,11 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
 
     # Suspect signals
     lines.append("## Suspect Signals")
+    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
     suspects_found = False
 
     if pure_host_pct > 50:
-        lines.append(f"  - Pure host ops dominate: {pure_host_pct:.0f}% of host time has no device work")
+        lines.append(f"  - [DEFINITE] Pure host ops dominate: {pure_host_pct:.0f}% of host time has no device work")
         lines.append(f"    → Framework/dispatch overhead is the primary host bottleneck")
         suspects_found = True
 
@@ -124,10 +125,10 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
                   if info["host_us"] > info["device_us"] * 10 and info["host_us"] > 5000
                   and info["device_us"] > 0]
     if high_ratio:
-        lines.append(f"  - Ops with extreme host/device ratio (host > 10x device, host > 5ms):")
+        lines.append(f"  - [SIGNAL] Ops with extreme host/device ratio (host > 10x device, host > 5ms):")
         for name, info in high_ratio[:5]:
             lines.append(f"    {name}: host={info['host_us']/1000:.1f}ms vs device={info['device_us']/1000:.1f}ms")
-        lines.append(f"    → Use --filter to check Call Stack and locate source code")
+        lines.append(f"    Cross-validate: --filter <op> for Call Stack source location, trace_view for host dispatch backlog")
         suspects_found = True
 
     if not suspects_found:

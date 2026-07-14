@@ -1,106 +1,147 @@
 # Profiling 分析推理指南
 
-脚本给出了数据和疑点，但从疑点到优化决策之间还需要推理。本文提供：
-- 信号组合的联合推理方法
-- 脚本信息不够时如何深入原始数据
-- 具体的代码级行动模式
+## 核心方法论: 五种分析模式
 
-## 从疑点到优化决策的推理
+脚本给出数据和疑点,但从疑点到优化决策之间需要**推理**。推理不是套用固定 pattern,而是运用以下五种分析模式——它们覆盖了所有性能分析场景,agent 遇到预定义路径覆盖不到的新情况时,用这五种模式自行构造推理。
 
-脚本标记的每个 Suspect Signal 只是起点。做优化决策还需回答：
-1. **根因是什么**：需要结合源码理解为什么这个操作会出现
-2. **是否值得优化**：占总耗时多少、优化后其他瓶颈是否会暴露
-3. **怎么优化**：具体用什么手段，参见下方行动模式
+### 模式 1: 横向关联(广度结合)
 
-## 信号组合的联合推理
+同一个问题从多个 profiling 文件/维度同时观察,交叉验证收敛到可靠结论。
 
-单一信号往往含义模糊，多个信号组合才能确定方向。
+- **目的**: 消除单信号歧义——单个脚本的输出往往有多种解释,多个来源指向同一方向才可信
+- **方法**: 针对同一怀疑点,分别从不同文件(step_trace / kernel_details / trace_view / operator_details / memory_record)提取相关信息,检查它们是否收敛
+- **何时用**: 单一脚本给出模糊判断时(如 step_trace 利用率 50% 附近难判 host/device bound);需要排除"是不是 profiler 自身开销造成的假象"时
+- **关键**: 各文件侧重不同维度——step_trace 给总体分布、kernel_details 给单 kernel 硬件细节、trace_view 给时序因果、operator_details 给源码映射。真问题会在多个维度同时留痕
 
-### Host-Bound + empty_tensor 占主导
+### 模式 2: 纵向深入(沿一个点逐层钻入)
 
-step_trace 利用率低 + operator_details 中 `empty_tensor` Host Duration 占比 > 30%
+从高层信号出发,层层递进到更细粒度的数据,直到定位到源码行级的根因。
 
-→ 不是 Python 调度开销，是 **allocator 同步瓶颈**。每次 `empty()` 都可能等 device 完成才能分配。
-→ 进一步确认：`parse_operator_memory` 是否有重复同尺寸分配
-→ 行动：预分配 buffer + `out=` 写入
+- **目的**: 从"模糊的慢"逐步收窄到"具体哪行代码、为什么慢、该怎么改"
+- **方法**: 每一步用更细粒度的文件/工具回答上一步留下的"为什么"
+- **何时用**: 已通过异常定位或横向关联确定一个可疑点,需要追到根因时
+- **典型路径**: op_statistic(哪类算子最耗时) → kernel_details --filter(该算子为什么慢: shape/硬件占比/Block Dim) → operator_details --filter(谁触发的: Call Stack) → 源码阅读(为什么这样写)
+- **关键**: 不要跳层——先确认"确实是这个算子的问题"再深入,避免在错误方向上浪费精力
 
-### Host-Bound + dispatch wrapper 占主导
+### 模式 3: 差异对比(两个状态的 delta)
 
-step_trace 利用率低 + operator_details 中 `aten::matmul` / `aten::linear` 等 pure host ops 占主导
+比较两份 profiling 数据,变化量本身就是信息。
 
-→ **Module.__call__ 调度栈**是瓶颈。每个算子都要走完整的 hook → check → dispatch 流程。
-→ 进一步确认：`parse_kernel_details` 的 wait time 是否均匀分布（每 kernel 都等 50-200μs）
-→ 行动：flat forward 绕过 Module，或图编译
+- **目的**: 隔离变量——不看绝对值,看什么变了什么没变
+- **方法**: 对比同一指标在两个状态下的差异
+- **适用对比**:
+  - 优化前 vs 优化后: 确认收益来自预期改动(用 diff_profiling)
+  - L0 vs L1 采集: 分离 profiler 注入开销(L1 的 Free/Preparing 可能被 profiler barrier 夸大)
+  - GPU vs NPU: 确定差距在哪个环节(如计算时间相近但 NPU 多出 dispatch gap)
+- **何时用**: 判断优化是否生效;区分 profiler 开销与真实瓶颈;跨平台定位差异根源
+- **关键**: 对比的两份数据必须只有一个变量不同(相同输入/相同 schedule/相同 step)
+
+### 模式 4: 异常定位(分布中找离群)
+
+看同类数据的分布,找打破 pattern 的异常点。
+
+- **目的**: 从大量正常数据中精确定位少数真正有问题的点
+- **方法**: 看分桶/排序/分位数,找显著偏离均值的条目
+- **何时用**: 全局统计看起来"还行"但实际有隐藏瓶颈时;需要从上千 kernel 中圈定嫌疑对象时
+- **关键**: 离群 = 线索,不等于结论。发现离群点后需用模式 2(纵向深入)或模式 1(横向关联)确认它是真问题还是正常变异
+- **脚本已做的**: Suspect Kernels(高耗时低利用率)、Top Stalls(聚合后最大的空隙)、dispatch latency top-N——这些本质都是异常定位
+
+### 模式 5: 时序因果(时间轴上的前后关系)
+
+利用事件的时间顺序推断因果关系。
+
+- **目的**: 建立"谁导致了谁"/"谁阻塞了谁"的因果链
+- **方法**: 在 trace_view 的时间线上观察事件的前后关系——A 总是紧挨在 B 之前出现,说明 A 可能导致/阻塞了 B
+- **何时用**: 知道"哪里慢"(如某处有大 gap)但不知道"为什么慢"时;需要区分"是 host 来不及喂"还是"device 在等某个同步"时
+- **关键**: parse_trace_view 的 stall 聚合(按 kernel 对)是时序因果的结构化输出;compile 事件紧贴在 device gap 前 = 编译导致的因果
+
+### 五种模式的协作
+
+实际分析不是只用一种模式,典型组合顺序:
+
+```
+1. 异常定位 → 从全局数据中圈定嫌疑点(从上千 kernel 缩到几个)
+2. 纵向深入 → 沿嫌疑点逐层钻到候选根因
+3. 横向关联 → 用其他文件交叉验证候选根因(单来源不可信)
+4. 时序因果 → 在 trace 中确认事件间的因果方向
+5. 差异对比 → 优化后确认收益确实来自预期改动
+```
+
+不是每次分析都走完五步——简单问题可能 1→2 就定位了;复杂问题可能在 2↔3 之间反复。
+
+---
+
+## 参考路径(已验证的信号组合实例)
+
+以下是经真实数据验证的典型信号组合,作为**快速匹配入口**——agent 遇到匹配的组合可直接走对应方向,遇到覆盖不到的新场景则用五种模式自行推理。这里只保留每类瓶颈最具代表性的一条,更多组合靠模式推导。
+
+### Host-Bound + compile 贯穿全程
+
+step_trace 利用率低 + trace_view compile B 类(贯穿全程) + kernel_details 硬件占比正常
+
+→ **每步在线编译**,非算子问题,是执行模式问题
+→ 分析模式: 横向关联(step_trace + trace_view + kernel_details 三方收敛)
+→ 行动：关 jit_compile / 固定 shape / 图编译
 
 ### 利用率高 + mte_ratio >> mac_ratio
 
 step_trace 利用率高 + kernel_details 硬件单元中 mte（搬运）远大于 mac（计算）
 
 → **Memory-Bound**：kernel 在忙但大部分时间在搬数据而非计算
-→ 进一步确认：`parse_kernel_details --filter <Top算子>` 看是否所有 shape 都 mte 高，还是只有特定 shape
-→ 如果所有 shape 都高：可能同时有过多大 tensor 导致 HBM 带宽竞争
-→ 如果只有特定 shape：该 shape 计算密度太低，考虑 padding 或换 shape
+→ 分析模式: 纵向深入(--filter 缩到具体算子和 shape)
+→ 行动：shape 不友好考虑 pad/合并；全局带宽瓶颈考虑减少同时存活大 tensor
+
+### 某算子 mac 高 + Block Dim 满 + cube_util 高
+
+kernel_details 中某算子 mac_ratio 高 + Block Dim 已达硬件上限 + cube_utilization 高
+
+→ **真 Compute-Bound**：计算密集且硬件利用已充分
+→ 分析模式: 异常定位(从分布中找已是上限的点) → 判定终局
+→ 行动：考虑量化/换算法降复杂度,或判定为终局(无优化空间)
+
+### memory_record 高频抖动 + 同尺寸反复分配 + empty host 耗时高
+
+memory_record 高频抖动 + operator_memory 同尺寸反复分配 + trace_view 中 empty 有高 host 耗时
+
+→ **Allocator-Bound**: 反复申请释放同一 buffer
+→ 分析模式: 横向关联(memory_record + operator_memory + trace_view 交叉验证)
+→ 行动：预分配 + `out=` 写入(复用维度)
 
 ### 小算子 > 50% + Block Dim=1 多 + 利用率低
 
-→ **Decode 场景的碎片化**：每 token shape 太小导致并行度不足 + dispatch 开销占比高
-→ 确认方法：kernel_details avg duration 是否极小（<20us）
-→ 行动：fp16/bf16 启用融合算子减少 kernel 数，或图编译
+→ **Decode 场景碎片化**：per-token shape 太小导致并行度不足 + dispatch 占比高
+→ 分析模式: 异常定位(avg duration <20us 离群)
+→ 行动：fp16/bf16 启用融合算子减少 kernel 数,或图编译
 
-### memory_record 高频抖动 + operator_memory 重复同尺寸分配
+---
 
-→ **缺少 buffer 复用**：同一个计算每次都分配释放相同大小的 tensor
-→ 进一步：`parse_operator_details --filter <op>` 看 Call Stack 确认是哪行代码
-→ 行动：在 `__init__` 中预分配，forward 中通过 `out=` 复用
+## 脚本信息不够时的深入方法
 
-### kernel_details 少数 kernel wait 极大（>10ms）
-
-→ 该 kernel 前有**显式同步**操作阻塞了 pipeline
-→ 看 wait 上下文中前面的 kernel 类型
-→ 常见原因：`.item()`、`.numpy()`、`.to(device)`、`empty_cache()`
-→ 行动：消除同步点，缓存结果或延迟到 batch 结束
-
-## 常见代码级行动模式
-
-| 诊断结论 | 代码行动 |
-|---------|---------|
-| Transpose 过多（layout 不一致） | 初始化时 `weight = weight.t().contiguous()`，forward 中直接用转置后的权重 |
-| 4D matmul 触发运行时 Transpose | reshape 为 3D `(B*H, S, D)` + `torch.bmm` 替代 4D `matmul`，K 存储为 `(B*H, D, S)` 省去运行时 transpose |
-| empty_tensor 过多（每次分配） | `self.buf = torch.empty(size, device=dev)` 在 init 预分配，forward 中 `torch.matmul(a, b, out=self.buf)` |
-| Module.__call__ 开销大 | 提取权重到 dict/list，写纯函数 forward 绕过 nn.Module 调度链 |
-| Mul + Sigmoid 成对高频 | `x.sigmoid_()` 原地化，或 `torch_npu.npu_swiglu(x)` 融合 |
-| torch.cat 导致 MemSet（如 KV cache） | 预分配 `(B, H, max_len, D)` buffer，每步 `cache[:,:,step,:] = new_kv` 替代 cat |
-| dropout p=0 仍有开销 | `model.layer.dropout = nn.Identity()` 或 monkey-patch 跳过 |
-| .item() / .numpy() 触发 D→H 同步 | 缓存到 list 或 device tensor，batch 结束后统一取回；禁用 Trainer 中的 nan_filter/grad_clip logging |
-| einsum 拆成多个 bmm | 改为显式 `torch.matmul` 减少算子数量 |
-| RmsNorm 手动实现碎片化 | 替换为 `torch_npu.npu_rms_norm` 或 `torch_npu.npu_add_rms_norm`（后者同时融合 residual add） |
-| 多个独立 Linear 可合并 | Q/K/V 三个 Linear 合并为一个大 MatMul + split，减少 kernel 数 |
-
-## 脚本不够时的深入方法
-
-当脚本输出信息不足以做判断时，直接读原始 CSV：
+当脚本输出不足以做判断时，直接读原始文件:
 
 | 想了解什么 | 去哪里 | 看什么 |
 |-----------|--------|--------|
 | 某算子的实际 input shape | `kernel_details.csv` | Input Shapes 列 |
 | 某次分配时系统内存有多满 | `operator_memory.csv` | Allocation Total Allocated(MB) |
-| 某算子在整个 forward 中出现的位置序列 | `kernel_details.csv` | 按 Start Time 排序，搜目标算子看它在序列中的分布 |
-| 完整的 Python 调用链 | `operator_details.csv` | Call Stack 列（分号分隔帧列表） |
-| 两个 kernel 之间的真实 gap | `kernel_details.csv` | 当前 kernel 的 Start Time - 上一个 kernel 的 (Start Time + Duration) |
+| 某算子在 forward 中出现的位置序列 | `kernel_details.csv` | 按 Start Time 排序搜目标算子 |
+| 完整的 Python 调用链 | `operator_details.csv` | Call Stack 列 |
+| 两个 kernel 之间的真实 gap | `kernel_details.csv` | Start Time - 上一个的 (Start Time + Duration) |
 | 某个 step 的独立数据 | `kernel_details.csv` | 按 Step Id 列过滤 |
-| Level0 vs Level1 对比 | 两份 profiling | 分别运行脚本对比 Computing/Free 差异，Level1 bubble 可能被夸大 |
+| L0 vs L1 采集差异 | 两份 profiling | 分别运行脚本对比，Level1 bubble 可能被 profiler barrier 夸大 |
 
-## 多种问题并存时的优先级
+---
 
-按收益确定性和实施风险排序：
+## 多问题并存时的优先级
+
+按收益确定性和实施风险排序:
 
 ```
 1. 显式同步（.item / .numpy / H2D / empty_cache）→ 消除（单点修复，收益确定，零风险）
-2. 图编译可行？→ 尝试（收益上限最高，但可能不兼容）
-3. allocator 同步（empty_tensor 占比高）→ 预分配（收益确定，改动较大）
-4. 框架 dispatch 开销 → flat forward（收益大，改动大）
-5. 碎片算子融合（Pow+Mean+Rsqrt / SiLU+Mul / QKV 合并）→ 融合算子或合并 Linear
-6. 通信串行（hcom 占比高）→ 通信-计算重叠（收益取决于可重叠的计算量）
-7. 数据布局（Transpose 多）→ 预转置 + 3D bmm（累积收益可观）
-8. kernel 本身慢（Compute-Bound）→ 降精度启用硬件加速（需精度验证）
+2. 在线编译→ 关 jit_compile / 固定 shape（根因级修复，收益大）
+3. 图编译可行？→ 尝试（收益上限最高，但可能不兼容）
+4. allocator 同步（empty_tensor 占比高）→ 预分配（收益确定，改动较大）
+5. 框架 dispatch 开销 → flat forward（收益大，改动大）
+6. 碎片算子融合 / 等价替换（融合算子、换 API）→ 逐个验证
+7. 数据布局（Transpose 多）→ 预转置 + 改布局
+8. kernel 本身慢（Compute-Bound）→ 降精度 / 换算法 / 判定终局
 ```

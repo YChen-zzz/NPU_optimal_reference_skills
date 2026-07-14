@@ -32,23 +32,27 @@ description: 在昇腾 NPU 上实施模型调优。当用户要求优化性能�
 - 修改前查阅 [npu_operator_reference.md](references/npu_operator_reference.md) 确认替代算子的 dtype/shape 约束
 - 用微基准验证修改方向，再做全量改动
 
-## 优化三原语
+## 优化四维度
 
-所有性能优化手段本质上只做三件事：
+所有性能优化手段本质上只做四件事：
 
-| 原语 | 核心问题 | 典型现象 |
+| 维度 | 核心问题 | 典型现象 |
 |------|---------|---------|
 | **去重** | "这个工作是必要的吗？能和相邻工作合并吗？" | 同类算子调用次数异常多；存在可合并的独立调用 |
 | **复用** | "这个结果/资源之后还会被需要吗？" | 相同尺寸 tensor 反复分配释放；同一计算结果被重复计算 |
 | **掩盖** | "这段延迟能和其他工作并行吗？" | 通信和计算串行排列；计算流中有可填充的空泡 |
+| **替换** | "同样的结果有没有硬件更便宜的等价写法？" | 某算子落 AI_CPU；一组拆解算子有官方融合算子；某 API 有 NPU 更友好的等价表达 |
 
-每个原语的详细原理、具体手段和代码模式见对应 reference：
+前三者改变工作量/工作方式，第四者改变同一工作的物理执行路径——它们正交，可组合。
 
-| 原语 | Reference | 核心内容 |
+每个维度的详细原理、具体手段和代码模式见对应 reference：
+
+| 维度 | Reference | 核心内容 |
 |------|-----------|---------|
 | 去重 | [eliminate_redundancy.md](references/eliminate_redundancy.md) | 合并调用、消除冗余、清理框架开销 |
 | 复用 | [reuse_and_precompute.md](references/reuse_and_precompute.md) | 预计算缓存、预分配 buffer、原地操作 |
 | 掩盖 | [hide_latency.md](references/hide_latency.md) | 通信-计算重叠、双 buffer 流水、图编译 |
+| 替换 | [equivalent_substitution.md](references/equivalent_substitution.md) | NPU 融合算子、换等价 API、换算法 |
 
 ## 其他 Reference 索引
 

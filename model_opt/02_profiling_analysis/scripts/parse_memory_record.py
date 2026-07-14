@@ -179,6 +179,7 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
 
     # --- Suspect Signals ---
     lines.append("## Suspect Signals")
+    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
     suspects_found = False
 
     # Growth trend
@@ -190,16 +191,16 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         late_avg = sum(late) / len(late)
         growth = late_avg - early_avg
         if growth > 100:
-            lines.append(f"  - Reserved growth trend: early avg {early_avg:,.0f}MB → late avg {late_avg:,.0f}MB (+{growth:,.0f}MB)")
-            lines.append(f"    Pool keeps growing — may need expandable_segments or strategic empty_cache")
+            lines.append(f"  - [SIGNAL] Reserved growth trend: early avg {early_avg:,.0f}MB → late avg {late_avg:,.0f}MB (+{growth:,.0f}MB)")
+            lines.append(f"    Cross-validate: check operator_memory for unreleased tensor accumulation")
             suspects_found = True
 
     # High churn
     if jumps:
         large_jumps = [j for j in jumps if j[0] > 50]
         if len(large_jumps) > 20:
-            lines.append(f"  - High memory churn: {len(large_jumps)} jumps > 50MB")
-            lines.append(f"    Frequent large alloc/dealloc — potential buffer reuse opportunity")
+            lines.append(f"  - [SIGNAL] High memory churn: {len(large_jumps)} jumps > 50MB")
+            lines.append(f"    Cross-validate: check operator_memory for repeated same-size alloc → buffer reuse opportunity")
             suspects_found = True
 
     # Fragmentation growing over time
@@ -211,13 +212,12 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         late_frag_avg = sum(late_frag) / len(late_frag)
         frag_growth = late_frag_avg - early_frag_avg
         if frag_growth > 50:
-            lines.append(f"  - Fragmentation growing: early gap avg {early_frag_avg:,.0f}MB → late {late_frag_avg:,.0f}MB (+{frag_growth:,.0f}MB)")
-            lines.append(f"    Pool fragmentation increasing over time")
+            lines.append(f"  - [SIGNAL] Fragmentation growing: early gap avg {early_frag_avg:,.0f}MB → late {late_frag_avg:,.0f}MB (+{frag_growth:,.0f}MB)")
             suspects_found = True
 
     # OOM risk
     if max_res > 60000:
-        lines.append(f"  - Peak reserved {max_res:,.0f}MB — close to HBM capacity, OOM risk")
+        lines.append(f"  - [DEFINITE] Peak reserved {max_res:,.0f}MB — close to HBM capacity, OOM risk")
         suspects_found = True
 
     if not suspects_found:

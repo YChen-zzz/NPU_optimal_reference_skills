@@ -92,9 +92,9 @@ def parse(profiling_dir: str, rank=None) -> str:
             lines.append(f"  Avg Preparing per step: {avg_prep/1000:.1f} ms")
             lines.append(f"  Avg Computing per step: {avg_comp/1000:.1f} ms")
             if avg_prep > avg_comp:
-                lines.append(f"  ** Preparing > Computing: profiler overhead dominates, or host is bottleneck **")
-                lines.append(f"  Note: Preparing includes profiler trace-writing overhead (Level1).")
-                lines.append(f"  Compare with Level0 profiling to distinguish real host gap from profiler cost.")
+                lines.append(f"  [SIGNAL] Preparing > Computing: may be real host bottleneck or profiler trace-writing overhead")
+                lines.append(f"    Preparing includes Level1 profiler trace-writing cost — cannot determine from this alone.")
+                lines.append(f"    Cross-validate: re-collect with L0 — if Preparing still high under L0 then real host gap, otherwise profiler injection.")
             lines.append("")
 
     # --- Suspect signals ---
@@ -104,6 +104,7 @@ def parse(profiling_dir: str, rank=None) -> str:
         avg_total = sum(step_totals) / len(step_totals)
 
         lines.append("## Suspect Signals")
+        lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
         suspects_found = False
 
         # Variance between steps
@@ -111,8 +112,8 @@ def parse(profiling_dir: str, rank=None) -> str:
             util_min = min(step_utils)
             util_max = max(step_utils)
             if util_max - util_min > 20:
-                lines.append(f"  - Step utilization variance: {util_min:.1f}% ~ {util_max:.1f}%")
-                lines.append(f"    Some steps significantly less efficient — check for warmup or data-dependent behavior")
+                lines.append(f"  [SIGNAL] Step utilization variance: {util_min:.1f}% ~ {util_max:.1f}%")
+                lines.append(f"    Some steps significantly less efficient — cross-validate: check for warmup/compilation/dynamic shape")
                 suspects_found = True
 
         # Step duration outliers
@@ -120,8 +121,8 @@ def parse(profiling_dir: str, rank=None) -> str:
             total_min = min(step_totals)
             total_max = max(step_totals)
             if total_max > total_min * 2:
-                lines.append(f"  - Step duration spread: {total_min/1000:.1f}ms ~ {total_max/1000:.1f}ms ({total_max/total_min:.1f}x)")
-                lines.append(f"    Large variation may indicate first-step compilation, dynamic shapes, or cache effects")
+                lines.append(f"  [SIGNAL] Step duration spread: {total_min/1000:.1f}ms ~ {total_max/1000:.1f}ms ({total_max/total_min:.1f}x)")
+                lines.append(f"    Large variation — cross-validate: check trace_view whether compile events cluster in outlier steps")
                 suspects_found = True
 
         if not suspects_found:

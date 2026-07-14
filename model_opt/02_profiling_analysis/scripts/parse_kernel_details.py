@@ -69,6 +69,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     # Suspect kernels: high duration but low compute ratio (both core types)
     suspect_heap = []
 
+    # AI_CPU fallback tracking
+    aicpu_kernels = []  # (dur, name, op_type, shapes)
+
     # Wait time distribution buckets
     wait_buckets = {"<100us": 0, "100-500us": 0, "500-2000us": 0, ">2000us": 0}
 
@@ -132,6 +135,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
                 elif dur > suspect_heap[0][0]:
                     heapq.heapreplace(suspect_heap, entry)
 
+        elif "AI_CPU" in core:
+            aicpu_kernels.append((dur, name, op_type, row.get("Input Shapes", "")))
+
         # Small kernel
         if dur < small_threshold and dur > 0:
             small_count += 1
@@ -167,16 +173,16 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     lines = []
     lines.append("# Kernel Details Analysis")
     lines.append(f"Source: {csv_path}")
-    lines.append(f"Total kernels: {total_rows:,}")
-    lines.append(f"Total compute: {total_dur_us/1000:.1f} ms")
-    lines.append(f"Total wait: {total_wait_us/1000:.1f} ms")
+    lines.append(f"Total kernels: {total_rows:,}  |  Compute: {total_dur_us/1000:.1f}ms  |  Wait: {total_wait_us/1000:.1f}ms")
     lines.append("")
 
-    # --- 1. Accelerator Core Split ---
+    # --- 1. Accelerator Core Distribution ---
     lines.append("## 1. Accelerator Core Distribution")
     for core, info in sorted(core_stats.items(), key=lambda x: -x[1]["dur_us"]):
         pct = info["dur_us"] / total_dur_us * 100 if total_dur_us > 0 else 0
         lines.append(f"  {core}: {info['count']:,} kernels, {info['dur_us']/1000:.1f}ms ({pct:.1f}%)")
+    if aicpu_kernels:
+        lines.append(f"  ⚠ AI_CPU detected: {len(aicpu_kernels)} kernels — see §3 for details")
     lines.append("")
 
     # --- 2. Hardware Unit Utilization ---
@@ -190,9 +196,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         avg_mac = aic_mac_sum / aic_kernels
         avg_mte = (aic_mte1_sum + aic_mte2_sum) / aic_kernels
         if avg_mte > avg_mac * 1.5:
-            lines.append(f"    → Memory-dominated: mte ratio ({avg_mte:.3f}) >> mac ratio ({avg_mac:.3f})")
+            lines.append(f"    → Memory-dominated: mte ({avg_mte:.3f}) >> mac ({avg_mac:.3f})")
         elif avg_mac > avg_mte * 1.5:
-            lines.append(f"    → Compute-dominated: mac ratio ({avg_mac:.3f}) >> mte ratio ({avg_mte:.3f})")
+            lines.append(f"    → Compute-dominated: mac ({avg_mac:.3f}) >> mte ({avg_mte:.3f})")
     if aiv_kernels > 0:
         lines.append(f"  AI_VECTOR_CORE ({aiv_kernels} kernels):")
         lines.append(f"    vec (compute):  {aiv_vec_sum/aiv_kernels:.3f}")
@@ -205,70 +211,87 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         low_util_count = sum(1 for v in cube_util_values if v < 50)
         lines.append(f"  Cube utilization: avg={avg_cube:.1f}%, min={min_cube:.1f}%, "
                      f"low(<50%)={low_util_count}/{len(cube_util_values)}")
+    if aic_kernels == 0 and aiv_kernels == 0:
+        lines.append("  ⚠ All ratios are 0 — check if aic_metrics=PipeUtilization was used during collection")
     lines.append("")
 
-    # --- 3. Small Kernel Identification ---
-    lines.append(f"## 3. Small Kernels (duration < {small_threshold}us)")
+    # --- 3. AI CPU Fallback [DEFINITE] ---
+    if aicpu_kernels:
+        lines.append("## 3. AI CPU Fallback [DEFINITE]")
+        lines.append("  These ops have no AI Core implementation — consider switching dtype or equivalent API.")
+        aicpu_total = sum(d for d, _, _, _ in aicpu_kernels)
+        lines.append(f"  Count: {len(aicpu_kernels)}  |  Total: {aicpu_total/1000:.1f}ms")
+        aicpu_sorted = sorted(aicpu_kernels, key=lambda x: -x[0])
+        lines.append(f"  {'Name':<35} {'Dur(us)':>8} {'Type':<15} {'Shapes'}")
+        lines.append(f"  {'-'*35} {'-'*8} {'-'*15} {'-'*20}")
+        for dur, name, otype, shapes in aicpu_sorted[:top_k]:
+            shapes_clean = shapes.replace("\n", " ").replace(";", "|").replace('"', '')[:30]
+            lines.append(f"  {name:<35} {dur:>8.1f} {otype:<15} {shapes_clean}")
+        lines.append("")
+
+    # --- 4. Small Kernels ---
+    sec_num = 4 if aicpu_kernels else 3
+    lines.append(f"## {sec_num}. Small Kernels (duration < {small_threshold}us)")
     if small_count > 0:
         small_pct = small_count / total_rows * 100
-        lines.append(f"  Count: {small_count:,} ({small_pct:.1f}% of all kernels)")
-        lines.append(f"  Cumulative time: {small_dur_total/1000:.2f} ms")
-        lines.append(f"  Type distribution:")
+        lines.append(f"  Count: {small_count:,} ({small_pct:.1f}% of all kernels)  |  Cumulative: {small_dur_total/1000:.2f}ms")
+        lines.append(f"  Top types:")
         for t, c in sorted(small_type_count.items(), key=lambda x: -x[1])[:10]:
             lines.append(f"    {t}: {c}")
     else:
         lines.append(f"  None found")
     lines.append("")
 
-    # --- 4. Block Dim (Parallelism) ---
-    lines.append("## 4. Block Dim Distribution (parallelism)")
+    # --- 5. Block Dim Distribution ---
+    sec_num += 1
+    lines.append(f"## {sec_num}. Block Dim Distribution (parallelism)")
     for bucket, count in block_dim_buckets.items():
         pct = count / total_rows * 100 if total_rows > 0 else 0
         bar = "█" * int(pct / 3)
         lines.append(f"  Dim {bucket:>5}: {count:>6} ({pct:>5.1f}%) {bar}")
     low_par = block_dim_buckets["1"]
     if low_par / total_rows > 0.1:
-        lines.append(f"  → {low_par} kernels with Block Dim=1: possibly shape too small for parallelism")
+        lines.append(f"  → {low_par} kernels with Block Dim=1: shape may be too small for parallelism")
     lines.append("")
 
-    # --- 5. Suspect Kernels (high duration, low compute ratio) ---
-    lines.append("## 5. Suspect Kernels (high duration, low compute ratio)")
-    lines.append("  Kernels where duration is high but hardware compute units (mac/vec) are barely used.")
-    lines.append("  May indicate: shape unfriendly to hardware, excessive data movement, or optimization opportunity.")
-    lines.append("  Use --filter to drill into specific types for further investigation.")
+    # --- 6. Wait Time Distribution (factual) ---
+    sec_num += 1
+    lines.append(f"## {sec_num}. Wait Time Distribution")
+    for bucket, count in wait_buckets.items():
+        pct = count / total_rows * 100 if total_rows > 0 else 0
+        lines.append(f"  {bucket:>10}: {count:>7} ({pct:.1f}%)")
     lines.append("")
+
+    # --- 7. Suspect Signals (diagnostic) ---
+    sec_num += 1
+    lines.append(f"## {sec_num}. Suspect Signals")
+    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, cross-validate with other dimensions")
+    lines.append("")
+
+    # 7a. Suspect Kernels
     suspect_sorted = sorted(suspect_heap, key=lambda x: -x[0])
     if suspect_sorted:
-        header = f"  {'Name':<42} {'Core':<10} {'Dur(us)':>8} {'Compute':>8} {'Move':>8} {'BDim':>5} {'Shapes'}"
+        lines.append("  [SIGNAL] High duration, low compute ratio — cross-validate: --filter <op> for shape distribution")
+        header = f"  {'Name':<42} {'Core':<5} {'Dur(us)':>8} {'Compute':>8} {'Move':>8} {'BDim':>5} {'Shapes'}"
         lines.append(header)
         lines.append("  " + "-" * (len(header) - 2))
         for dur, _, name, core, compute_ratio, move_ratio, shapes, bdim in suspect_sorted:
             shapes_clean = shapes.replace("\n", " ").replace(";", "|").replace('"', '')[:30]
             core_short = "AIC" if "AI_CORE" == core else "AIV"
             lines.append(
-                f"  {name:<42} {core_short:<10} {dur:>8.1f} "
+                f"  {name:<42} {core_short:<5} {dur:>8.1f} "
                 f"{compute_ratio:>7.3f} {move_ratio:>7.3f} {bdim:>5} {shapes_clean}")
-    else:
-        lines.append("  None found")
-    lines.append("")
+        lines.append("")
 
-    # --- 6. Wait Time Distribution ---
-    lines.append("## 6. Wait Time Distribution")
-    for bucket, count in wait_buckets.items():
-        pct = count / total_rows * 100 if total_rows > 0 else 0
-        lines.append(f"  {bucket:>10}: {count:>7} kernels ({pct:.1f}%)")
-    lines.append("")
-
-    # High-wait context (top few)
+    # 7b. High-wait context
     high_wait_indices = [i for i, k in enumerate(all_kernels) if k["wait"] > wait_threshold]
     if high_wait_indices:
-        lines.append(f"  Top high-wait points (wait > {wait_threshold:.0f}us), showing surrounding kernels:")
+        lines.append(f"  [SIGNAL] High-wait kernels (wait > {wait_threshold:.0f}us) — cross-validate: trace_view for cause")
         lines.append("")
-        # Pick top-k by wait time
         top_waits = sorted(high_wait_indices, key=lambda i: -all_kernels[i]["wait"])[:min(top_k, 8)]
         for rank_idx, idx in enumerate(top_waits, 1):
             k = all_kernels[idx]
-            lines.append(f"  [{rank_idx}] kernel #{idx}: {k['name']}  wait={format_duration_ms(k['wait'])}")
+            lines.append(f"  [{rank_idx}] #{idx} {k['name']}  wait={format_duration_ms(k['wait'])}")
             context = 2
             start = max(0, idx - context)
             end = min(len(all_kernels), idx + context + 1)
@@ -277,6 +300,10 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
                 marker = " <<<" if i == idx else ""
                 lines.append(f"      [{i}] {ck['type']:<20} dur={ck['dur']:>7.1f}us  wait={ck['wait']:>7.0f}us{marker}")
             lines.append("")
+
+    if not suspect_sorted and not high_wait_indices:
+        lines.append("  None")
+        lines.append("")
 
     return "\n".join(lines)
 

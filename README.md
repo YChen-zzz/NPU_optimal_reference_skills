@@ -4,15 +4,25 @@
 
 ## 快速使用
 
-### Kerminal CLI
-
-克隆本仓库后，将 `model_opt` 目录软链接到 Kerminal 的 skills 目录：
+本仓库包含 skill 文件夹（`model_opt/`、`opt_explore/`）和开发日志文件夹（`docs/`）。如果只需要使用 skills，用 sparse-checkout 跳过 `docs/`：
 
 ```bash
-git clone <本仓库地址>
-ln -sfn $(pwd)/model_opt ~/.kerminal/skills/model_opt
+git clone --depth 1 --sparse https://github.com/autokernel-sz/OPT-Skills.git
+cd OPT-Skills && git sparse-checkout set model_opt opt_explore
 ```
-或者直接下载到 Kerminal 的 skills 目录
+
+> 使用 SSH 则将 clone 地址替换为 `git@github.com:autokernel-sz/OPT-Skills.git`。
+
+### Kerminal CLI
+
+将 skill 目录软链接到 Kerminal 的 skills 目录：
+
+```bash
+ln -sfn $(pwd)/model_opt ~/.kerminal/skills/model_opt
+ln -sfn $(pwd)/opt_explore ~/.kerminal/skills/opt_explore
+```
+
+也可以直接把 skill 文件夹复制到 `~/.kerminal/skills/` 下。
 
 Kerminal 会在启动时扫描 `~/.kerminal/skills/` 下的所有 `SKILL.md`，根据 `description` 字段自动匹配用户意图并加载。
 
@@ -31,33 +41,26 @@ Kerminal 会在启动时扫描 `~/.kerminal/skills/` 下的所有 `SKILL.md`，�
 ## 目录结构
 
 ```
-model_opt/
-├── SKILL.md                          # 主 Skill：全流程、确认节点、子 skill 索引
-├── references/
-│   └── standardized_operations.md    # Profiling 采集与精度对比规范
-│
-├── 01_preparation/                   # Phase 1：环境搭建、数据准备、脚本构建
-│   ├── SKILL.md
+OPT-Skills/
+├── README.md
+├── model_opt/                        # 主 Skill：NPU 模型适配全流程优化
+│   ├── SKILL.md                      # 全流程、确认节点、子 skill 索引
 │   ├── references/
-│   └── scripts/
+│   │   └── standardized_operations.md    # Profiling 采集与精度对比规范
+│   ├── 01_preparation/               # Phase 1：环境搭建、数据准备、脚本构建
+│   ├── 02_profiling_analysis/        # Phase 2：Profiling 数据分析 + 源码根因定位
+│   ├── 03_optimization/              # Phase 3：基于三原语的优化实施
+│   ├── 04_accuracy_assurance/        # Phase 4：推理/训练精度验证
+│   ├── 05_engineering/               # Phase 5：Git 管理、日志、文档
+│   └── 06_evidence_db/               # Phase 6：优化证据库
 │
-├── 02_profiling_analysis/            # Phase 2：Profiling 数据分析 + 源码根因定位
+├── opt_explore/                      # 辅助 Skill：代码探索与上下文分析
 │   ├── SKILL.md
-│   ├── references/                   # 脚本指南、推理指南、诊断方法、源码分析
-│   └── scripts/                      # 7 个 CANN CSV 解析脚本
+│   └── references/
 │
-├── 03_optimization/                  # Phase 3：基于三原语的优化实施
-│   ├── SKILL.md
-│   └── references/                   # 三原语详解、NPU checklist、算子参考...
-│
-├── 04_accuracy_assurance/            # Phase 4：推理/训练精度验证
-│   ├── SKILL.md
-│   ├── references/
-│   └── scripts/                      # 精度对比工具
-│
-└── 05_engineering/                   # Phase 5：Git 管理、日志、文档
-    ├── SKILL.md
-    └── templates/
+└── docs/                             # 开发日志（不需要可跳过）
+    ├── profiling_update_records/
+    └── system_improvement_records/
 ```
 
 ## Profiling 解析脚本
