@@ -170,6 +170,26 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     if total_rows == 0:
         return f"[kernel_details] Empty file: {csv_path}"
 
+    # Detect fusible sequences: consecutive small kernels with high cumulative time
+    fusible_sequences = []  # (total_dur, count, start_idx, op_types)
+    i = 0
+    SMALL_THRESH = 10.0  # us
+    MIN_LEN = 5
+    while i < len(all_kernels):
+        if all_kernels[i]["dur"] > 0 and all_kernels[i]["dur"] < SMALL_THRESH:
+            j = i
+            seq_total = 0
+            while j < len(all_kernels) and all_kernels[j]["dur"] > 0 and all_kernels[j]["dur"] < SMALL_THRESH:
+                seq_total += all_kernels[j]["dur"]
+                j += 1
+            seq_len = j - i
+            if seq_len >= MIN_LEN and seq_total > 100:
+                types = [all_kernels[k]["type"] for k in range(i, j)]
+                fusible_sequences.append((seq_total, seq_len, i, types))
+            i = j
+        else:
+            i += 1
+
     lines = []
     lines.append("# Kernel Details Analysis")
     lines.append(f"Source: {csv_path}")
@@ -301,7 +321,22 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
                 lines.append(f"      [{i}] {ck['type']:<20} dur={ck['dur']:>7.1f}us  wait={ck['wait']:>7.0f}us{marker}")
             lines.append("")
 
-    if not suspect_sorted and not high_wait_indices:
+    # 7c. Fusible operator sequences
+    if fusible_sequences:
+        fusible_sorted = sorted(fusible_sequences, key=lambda x: -x[0])
+        total_fusible = sum(s[0] for s in fusible_sorted)
+        lines.append(f"  [SIGNAL] Fusible sequences: {len(fusible_sorted)} sequences of ≥{MIN_LEN} consecutive small kernels (<{SMALL_THRESH}us)")
+        lines.append(f"    Total time in fusible sequences: {total_fusible/1000:.2f}ms ({total_fusible/total_dur_us*100:.1f}% of compute)")
+        lines.append(f"    Top {min(top_k, 5)} by cumulative time:")
+        for total, count, start_idx, types in fusible_sorted[:5]:
+            from collections import Counter
+            tc = Counter(types).most_common(3)
+            type_str = ", ".join(f"{t}:{c}" for t, c in tc)
+            lines.append(f"      {total/1000:.2f}ms  {count} kernels  at #{start_idx}  types: {type_str}")
+        lines.append("    → Cross-validate: check if these can be fused (equivalent_substitution layer 1) or batched.")
+        lines.append("")
+
+    if not suspect_sorted and not high_wait_indices and not fusible_sequences:
         lines.append("  None")
         lines.append("")
 

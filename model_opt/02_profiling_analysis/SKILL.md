@@ -47,6 +47,7 @@ CANN profiler 输出以下文件，每个文件提供不同维度的信息：
 | `memory_record.csv` | 按时间采样的 Reserved/Allocated 内存 | 30K-1M 行 | 内存时间线、峰值定位 |
 | `operator_memory.csv` | 每个 tensor 的 size、lifetime、分配时全局状态 | ~10K 行 | 逐 tensor 生命周期，buffer 复用分析 |
 | `trace_view.json` | host↔device 时序、下发链、Call stack | 4MB-1GB+ | host-bound 成因：下发/编译/同步；源码栈（with_stack 时）|
+| `communication.json` / `communication_matrix.json` | HCCL 通信时间分解、per-link 带宽 | — | 多卡通信瓶颈：同步等待 vs 带宽，straggler 检测 |
 
 ## 瓶颈分类
 
@@ -79,6 +80,7 @@ $S/parse_step_trace.py <dir>         → 判断瓶颈侧（host or device）
 $S/parse_op_statistic.py <dir>       → 哪类算子最耗时
 $S/parse_kernel_details.py <dir>     → 硬件单元、小算子、流水 stall
 $S/parse_trace_view.py <dir>         → host→device 下发链、device 空隙、在线编译(A预热/B每步)
+$S/parse_communication.py <dir>      → 多卡通信：时间分解、带宽、同步等待占比
 $S/parse_memory_record.py <dir>      → 内存峰值、碎片化、分配趋势
 $S/parse_operator_memory.py <dir>    → 逐 tensor 生命周期，buffer 复用机会
 ```

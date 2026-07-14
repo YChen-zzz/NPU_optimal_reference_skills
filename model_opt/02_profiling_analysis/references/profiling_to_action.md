@@ -113,6 +113,14 @@ memory_record 高频抖动 + operator_memory 同尺寸反复分配 + trace_view 
 → 分析模式: 异常定位(avg duration <20us 离群)
 → 行动：fp16/bf16 启用融合算子减少 kernel 数,或图编译
 
+### Communication Wait% > 80% + step_trace 通信占比高
+
+communication.json 中 Wait Time 占总通信时间 >80% + step_trace Communication 列占比高
+
+→ **同步瓶颈（非带宽问题）**：通信时间几乎全在等，不在传
+→ 分析模式: 横向关联(communication + trace_view + step_trace 三方收敛)
+→ 行动：查通信-计算重叠（hide_latency）、查 straggler rank（某 rank 慢导致其他等）、减少同步点
+
 ---
 
 ## 脚本信息不够时的深入方法

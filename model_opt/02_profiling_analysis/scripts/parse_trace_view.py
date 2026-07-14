@@ -141,6 +141,14 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     PREFETCH_KEYS = ("aten::to", "copy_", "aten::copy", "::empty", "empty_",
                      "aten::empty", "memcpy", "to_copy", "_to_copy", "pin_memory")
 
+    # AI Core frequency, GC, stream sync, Node@launch tracking
+    freq_values = []
+    freq_max = 0
+    gc_events = []                        # (dur_ns, name)
+    sync_stream_count = 0
+    node_launch_count = 0
+    sync_stream_dur = 0
+
     for e in stream_json_array(csv_path):
         if not isinstance(e, dict):
             continue
@@ -232,6 +240,21 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             acl_compile_dur += dur_ns(e.get("dur"))
             if len(compile_ts) < 500000:
                 compile_ts.append(parse_ts_ns(e.get("ts")))
+
+        elif ph == "C" and isinstance(e.get("args"), dict) and "MHz" in e["args"]:
+            mhz = e["args"]["MHz"]
+            freq_values.append(mhz)
+            freq_max = max(freq_max, mhz)
+
+        elif cat == "GC" and ph == "X":
+            gc_events.append((dur_ns(e.get("dur")), name))
+
+        elif ph == "X" and "SynchronizeStream" in str(name):
+            sync_stream_count += 1
+            sync_stream_dur += dur_ns(e.get("dur"))
+
+        elif ph == "X" and str(name) == "Node@launch":
+            node_launch_count += 1
 
     if dev_count == 0 and not caps:
         return f"[trace_view] Empty or unrecognized file: {csv_path}"
@@ -351,6 +374,34 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     elif caps.get("cpu_op", 0) and has_callstack and not acl_compile:
         L.append("  No significant H2D copy or repeated allocation ops found (aten::to / copy_ / empty etc.).")
         L.append("")
+
+    # AI Core frequency degradation
+    if freq_values and freq_max > 0:
+        decrease_ratio = sum(freq_max - f for f in freq_values) / (freq_max * len(freq_values))
+        if decrease_ratio >= 0.05:
+            L.append(f"  [DEFINITE] AI Core frequency degradation: {decrease_ratio*100:.1f}% "
+                     f"(max={freq_max}MHz, min={min(freq_values)}MHz)")
+            L.append("    → Thermal/power throttling. Check: cooling, power limit, or reduce compute intensity.")
+            L.append("")
+
+    # GC events
+    if gc_events:
+        gc_total = sum(d for d, _ in gc_events)
+        gc_sorted = sorted(gc_events, key=lambda x: -x[0])
+        L.append(f"  [SIGNAL] Python GC: {len(gc_events)} events, total {format_duration_ms(gc_total/1000)}")
+        L.append("    Top GC events:")
+        for dur, name in gc_sorted[:3]:
+            L.append(f"      {format_duration_ms(dur/1000)}  {name[:60]}")
+        L.append("    → Cross-validate: if GC frequent, check for excessive small tensor allocations (operator_memory).")
+        L.append("")
+
+    # Stream synchronization
+    if sync_stream_count > 0 and node_launch_count > 0:
+        co_ratio = sync_stream_count / node_launch_count * 100
+        if co_ratio > 10:
+            L.append(f"  [DEFINITE] Frequent stream synchronization: {sync_stream_count} sync vs {node_launch_count} launches ({co_ratio:.1f}%)")
+            L.append("    → Likely ASCEND_LAUNCH_BLOCKING=1 or explicit syncs. Check env vars and .item()/.numpy() usage.")
+            L.append("")
 
     return "\n".join(L)
 
