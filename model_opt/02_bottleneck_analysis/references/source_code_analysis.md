@@ -1,6 +1,6 @@
-# 源码分析方法（根因定位）
+# Profiling 驱动的源码定位(Line B)
 
-本文描述如何从 Profiling 疑点出发，通过源码分析定位根因。
+从 Profiling 异常出发,通过源码分析定位根因。
 
 ## 从 Profiling 信号到源码位置
 
@@ -39,26 +39,7 @@ Profiling 告诉你"什么操作耗时"，但你需要找到它在源码中的�
 | 不必要的同步 | .item()/.numpy() 等 D→H 操作 | 每步都把 loss 取回 host |
 | 训练遗留 | 推理时仍执行 dropout(p=0) 等 | 未清理的训练专用分支 |
 
-## 源码结构理解
-
-### 理解模型整体架构
-
-在做任何优化前，先建立对源码的全局认知：
-
-1. **找入口**：从推理/训练脚本出发（通常是 `main()` → `model(input)`），找到 forward 的第一层调用
-2. **画层级**：识别模型的层次结构——哪些子模块被循环调用（如 `for layer in self.layers`）、循环几次
-3. **标计算路径**：forward 中的主计算路径是什么（attention → FFN → norm），哪些是分支逻辑
-4. **找数据形变点**：tensor 在哪里改变 shape/dtype/device（reshape、transpose、cast、to），这些是潜在的性能拐点
-
-### 关注框架交互
-
-模型不是孤立运行的，它和框架（HuggingFace、PyTorch Lightning 等）的交互可能是瓶颈源：
-
-- **generate 循环**：HF 的 `generate()` 函数几千行，每步都做 stopping criteria 检查、logits 处理、cache 更新——这些可能比模型计算本身还慢
-- **Trainer 循环**：每步的 gradient clipping、NaN detection 可能调用 `.item()` 触发同步
-- **Module.__call__**：PyTorch 的 Module 调度链（hook 检查、autograd 设置）在模型层数多时累积成本可观
-
-### 关注 NPU 特异性
+## 关注 NPU 特异性
 
 同一段 PyTorch 代码在 NPU 上的行为可能和 GPU 不同：
 
@@ -88,4 +69,4 @@ grep -rn "torch\.zeros\|torch\.empty\|torch\.ones" model/ --include="*.py"
 grep -rn "torch\.cat\|F\.one_hot" model/ --include="*.py"
 ```
 
-详见 [03_optimization/references/npu_checklist.md](../03_optimization/references/npu_checklist.md) 获取完整的 NPU 已知问题扫描清单。
+详见 [npu_checklist.md](../../03_optimization/references/npu_checklist.md) 获取完整的 NPU 已知问题扫描清单。

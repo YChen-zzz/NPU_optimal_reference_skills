@@ -2,7 +2,7 @@
 
 ## 概述
 
-本 skill 的 `scripts/` 目录（即 `02_profiling_analysis/scripts/`）下的脚本用于解析 CANN profiler 产出的 CSV 文件，将百万级原始数据压缩为结构化摘要，供 agent 消费后做优化决策。
+本 skill 的 `scripts/` 目录（即 `02_bottleneck_analysis/scripts/`）下的脚本用于解析 CANN profiler 产出的 CSV 文件，将百万级原始数据压缩为结构化摘要，供 agent 消费后做优化决策。
 
 这些脚本**只依赖 CANN profiler 的固定 CSV 格式**，不依赖任何特定项目的代码结构或路径。对于需要项目上下文才能判断的信息（如 Call Stack 中哪些是项目代码），脚本原样输出，由 agent 自行解读。
 

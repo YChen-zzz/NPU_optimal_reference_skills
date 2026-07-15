@@ -33,8 +33,9 @@ Phase 1  前期准备
          └─ 采集 L0 基线（全程仅一次，作为最终收益判定基准）
    ↓
 ┌─────────────────── 一个「优化阶段」（可迭代多轮）───────────────────┐
-│ Phase 2  Profiling 分析                                            │
-│          └─ 阶段前采集 L1（信息不足以定位优化点时改采 L2）           │
+│ Phase 2  瓶颈分析                                                  │
+│          ├─ Line B: Profiling 分析（采集 L1 → 脚本 → 定位可见瓶颈） │
+│          └─ Line A: 源码分析（必做,四维度审视源码,发现结构性冗余）    │
 │    ↓                                                              │
 │  ★ A  用户确认优化方案（展示方案 → 确认/裁剪）                       │
 │    ↓                                                              │
@@ -87,7 +88,7 @@ Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方�
 | 阶段 | 子技能 | 触发时机 |
 |------|--------|----------|
 | Phase 1 | [01_preparation/SKILL.md](01_preparation/SKILL.md) | 项目启动、环境搭建、基线采集、脚本构建 |
-| Phase 2 | [02_profiling_analysis/SKILL.md](02_profiling_analysis/SKILL.md) | 定位瓶颈、解读 profiling 数据 |
+| Phase 2 | [02_bottleneck_analysis/SKILL.md](02_bottleneck_analysis/SKILL.md) | 瓶颈分析:源码结构线 + Profiling 数据线 |
 | Phase 3 | [03_optimization/SKILL.md](03_optimization/SKILL.md) | 实施具体优化手段 |
 | Phase 4 | [04_accuracy_assurance/SKILL.md](04_accuracy_assurance/SKILL.md) | 验证精度、调试精度问题 |
 | Phase 5 | [05_engineering/SKILL.md](05_engineering/SKILL.md) | 代码管理、日志、版本控制 |
@@ -99,7 +100,10 @@ Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方�
 
 > L0 基线与各优化阶段 Phase 2 的 L1 是**两次目的不同的采集**：L0 基线只采一次、贯穿全程用于收益对比；L1 每轮迭代前都重新采集、用于定位当轮优化点。级别定义与代码模板见 [01_preparation/SKILL.md](01_preparation/SKILL.md)「采集级别选择」及 [profiling_collection.md](01_preparation/references/profiling_collection.md) §1。
 
-**Phase 2 Profiling 分析**：本轮优化阶段开始，先采集 **L1**（信息不足以定位优化点时改采 **L2**），定位瓶颈类型（Compute-Bound / Host-Bound / Memory-Bound / Allocator-Bound），输出优先级排序的优化清单。含显存峰值分析方法。分析完成后进入**确认节点 A**。
+**Phase 2 瓶颈分析**：
+- **Line B (先做)**:采集 **L1**(信息不足时改采 **L2**),跑脚本,用五种分析模式定位可见瓶颈。
+- **Line A (必做)**:通读源码(穿透框架),用四维度审视,发现结构性冗余。用 Line B 的数据量化收益。
+- 两条线**都必须执行**,产出合并后进入**确认节点 A**。
 
 **★ 确认节点 A**：向用户展示优化方案清单（每条含内容、预期收益、风险等级），询问方案是否合适、有无需要跳过的优化点。仅实施用户确认的条目。
 

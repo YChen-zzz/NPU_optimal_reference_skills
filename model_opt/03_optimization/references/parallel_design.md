@@ -14,7 +14,7 @@
 
 ### 分析步骤
 
-1. 定位峰值瞬间所有存活张量的 shape（见 `02_profiling_analysis/references/memory_profiling.md`）
+1. 定位峰值瞬间所有存活张量的 shape（见 `02_bottleneck_analysis/references/memory_profiling.md`）
 2. 找到这些张量**共享的大维度**
 3. 对候选维度逐一评估：切分后哪些操作仍可本地完成，哪些需要通信
 
