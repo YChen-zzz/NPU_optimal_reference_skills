@@ -2,7 +2,18 @@
 
 ## 何时需要多卡并行
 
-单卡 HBM 无法容纳推理/训练中多个同时存活的大张量时。先确认属于哪种场景：
+**前提**: 多卡并行不是一种"优化手段",而是资源扩展手段。只有当单卡资源(内存/计算)真正不够、且单卡优化(去重/复用/替换)已无空间时才考虑。
+
+进入此文档的触发条件(profiling 提供 trigger,源码决定方案):
+
+1. **内存放不下**: `parse_operator_memory` 的 Parallelism Trigger 显示"消除 waste 后投影峰值仍 > 80% HBM" → 短命大 tensor 已无法解释内存压力,说明必要数据(模型参数/激活/梯度)本身超过单卡容量
+2. **计算到顶仍不够快**: `parse_kernel_details` 显示 compute-bound(mac_ratio 高 + cube_util 高 + Block Dim 满),单卡已优化到硬件上限但性能仍不满足
+3. **已多卡但效率低**: `parse_step_trace` 显示已有多卡通信(comm 列有值)但 device 利用率 < 50% → 当前并行策略需改进
+
+⚠ **本文档的切分方案需要源码分析,profiling 只提供 trigger。** 进入后:
+1. 用 operator_details 的 Call Stack 定位大 tensor 的源码位置
+2. 阅读该处的计算结构,找出可切分的大维度
+3. 按下方"切分维度选择"原则评估
 
 | 场景 | 方案方向 |
 |------|---------|

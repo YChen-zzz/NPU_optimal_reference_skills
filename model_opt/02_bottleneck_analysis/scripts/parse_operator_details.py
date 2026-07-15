@@ -26,7 +26,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import (find_ascend_profiler_output, stream_csv, safe_float,
+from common import (threshold, find_ascend_profiler_output, stream_csv, safe_float,
                     clean_multiline_field, format_duration_ms)
 
 
@@ -116,13 +116,13 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
     suspects_found = False
 
-    if pure_host_pct > 50:
+    if pure_host_pct > threshold("operator_details", "pure_host_pct", 50):
         lines.append(f"  - [DEFINITE] Pure host ops dominate: {pure_host_pct:.0f}% of host time has no device work")
         lines.append(f"    → Framework/dispatch overhead is the primary host bottleneck")
         suspects_found = True
 
     high_ratio = [(name, info) for name, info in op_sorted_host
-                  if info["host_us"] > info["device_us"] * 10 and info["host_us"] > 5000
+                  if info["host_us"] > info["device_us"] * threshold("operator_details", "extreme_hd_ratio", 10) and info["host_us"] > threshold("operator_details", "extreme_host_us", 5000)
                   and info["device_us"] > 0]
     if high_ratio:
         lines.append(f"  - [SIGNAL] Ops with extreme host/device ratio (host > 10x device, host > 5ms):")

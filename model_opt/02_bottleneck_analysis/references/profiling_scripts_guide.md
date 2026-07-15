@@ -18,7 +18,8 @@
 | `parse_memory_record.py` | `memory_record.csv` | ~30K-1M 行 | 内存时间线，峰值定位，OOM 预判 |
 | `parse_operator_details.py` | `operator_details.csv` | ~100K-20M 行 | 单算子耗时 + 完整调用栈（流式 Top-K） |
 | `parse_operator_memory.py` | `operator_memory.csv` | ~10K 行 | 内存分配热点 |
-| `parse_trace_view.py` | `trace_view.json` | 4MB-1GB+ | 时序：host→device 下发链、device 空隙、首次编译停顿、Call stack 源码栈 |
+| `parse_communication.py` | `communication.json` + `communication_matrix.json` | — | 多卡通信分析：时间分解、带宽、等待占比 |
+| `parse_trace_view.py` | `trace_view.json` | 4MB-1GB+ | 时序：host→device 下发链、device 空隙、在线编译停顿、Call stack 源码栈 |
 | `diff_profiling.py` | 两份 profiling 目录 | — | 对比两次采集的算子耗时和内存变化 |
 
 ## 通用调用方式
@@ -248,6 +249,34 @@ python parse_operator_memory.py /path/to/profiling --top-k 20
 ```bash
 python parse_trace_view.py /path/to/profiling --top-k 15 --gap-threshold 50
 python parse_trace_view.py /path/to/profiling --filter aten::addmm
+```
+
+---
+
+### parse_communication.py
+
+**输入**：`communication.json` + `communication_matrix.json`（多卡场景 profiler_level >= Level1 时产出）
+
+**定位**：通信分析工具。唯一能回答"通信为什么慢"的脚本——区分"真在传数据(Transit)"还是"在等其他 rank(Wait/Sync)"，以及带宽是否正常。
+
+**输出包含**：
+1. **Summary**：总通信时间分解（Transit/Wait/Sync/Idle）——一眼看出是带宽瓶颈还是同步瓶颈
+2. **By Op Type**：按通信算子类型（allGather/alltoall/allReduce）聚合，含 Wait% 和 Transit%
+3. **Top Ops by Elapse**：最耗时的通信算子排名
+4. **Per-Link Bandwidth**：从 communication_matrix 提取的 per-link 带宽（min/avg/max + 最高/最低 link）
+5. **Suspect Signals**：
+   - [DEFINITE] Wait 占比 >80% → 同步瓶颈（非带宽问题），查通信-计算重叠 / straggler / 同步点
+   - [SIGNAL] 某类算子 Wait% >90% → 交叉验证 trace_view 看 compute-comm 重叠
+   - [SIGNAL] 低带宽 link（<30% 均值）→ 瓶颈 link
+   - [SIGNAL] 小包占比 >30% → 考虑 batch 减少 small-packet overhead
+
+**何时使用**：
+- step_trace 显示 Communication 占比高时
+- 多卡场景排查 straggler（某 rank 慢导致其他 rank 等待）
+- 通信-计算重叠分析（配合 trace_view）
+
+```bash
+python parse_communication.py /path/to/profiling --rank 0 --top-k 15
 ```
 
 ---

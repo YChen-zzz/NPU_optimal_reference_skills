@@ -31,7 +31,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_ascend_profiler_output, format_duration_ms
+from common import threshold, find_ascend_profiler_output, format_duration_ms
 
 
 def stream_json_array(path: Path, chunk_size: int = 4 * 1024 * 1024):
@@ -103,16 +103,16 @@ def is_device(e):
     return e.get("ph") == "X" and isinstance(e.get("args"), dict) and "Task Type" in e["args"]
 
 
-def condense_stack(cs: str, max_frames: int = 6):
+def condense_stack(cs: str):
     """Condense a call stack: keep project frames (drop site-packages / std libs),
     cap the count. Returns list of frame strings. Falls back to top frames if all
     frames are library frames."""
     frames = [f.strip() for f in str(cs).replace("\r", "").split(";") if f.strip()]
-    lib_markers = ("site-packages", "dist-packages", "/lib/python", "torch/nn/modules",
-                   "torch/_ops", "autograd/profiler", "torch_npu/profiler")
+    lib_markers = tuple(threshold("trace_view", "stack_lib_markers",
+                   ["site-packages", "dist-packages", "/lib/python", "torch/nn/modules", "torch/_ops", "autograd/profiler", "torch_npu/profiler"]))
     proj = [f for f in frames if not any(m in f for m in lib_markers)]
     picked = proj if proj else frames
-    return picked[:max_frames]
+    return picked[:threshold("trace_view", "stack_max_frames", 6)]
 
 
 def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
@@ -124,7 +124,8 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     stream_stats = defaultdict(lambda: [0, None, None, 0, 0])
     last_end = {}                          # (pid,tid) -> (end_ns, name) for compute tasks
     noncompute_count = 0
-    gap_buckets = {"<10us": 0, "10-50us": 0, "50-200us": 0, ">200us": 0}
+    _gb = threshold("trace_view", "gap_buckets_us", [10, 50, 200])
+    gap_buckets = {f"<{_gb[0]}us": 0, f"{_gb[0]}-{_gb[1]}us": 0, f"{_gb[1]}-{_gb[2]}us": 0, f">{_gb[2]}us": 0}
     stall_agg = defaultdict(lambda: [0, 0, 0])  # (prev,cur) -> [count, sum_gap, max_gap]
 
     flow_ts = {}                           # HostToDevice id -> [s_ts, f_ts, dev_name]
@@ -138,8 +139,16 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     compile_ts = []                        # timestamps of compile events (bounded)
     host_prefetch = []                     # heap: (dur_ns, name, callstack) for H2D/alloc ops
     has_callstack = False
-    PREFETCH_KEYS = ("aten::to", "copy_", "aten::copy", "::empty", "empty_",
-                     "aten::empty", "memcpy", "to_copy", "_to_copy", "pin_memory")
+    PREFETCH_KEYS = tuple(threshold("trace_view", "prefetch_keywords",
+                     ["aten::to", "copy_", "aten::copy", "::empty", "empty_", "aten::empty", "memcpy", "to_copy", "_to_copy", "pin_memory"]))
+
+    # AI Core frequency, GC, stream sync, Node@launch tracking
+    freq_values = []
+    freq_max = 0
+    gc_events = []                        # (dur_ns, name)
+    sync_stream_count = 0
+    node_launch_count = 0
+    sync_stream_dur = 0
 
     for e in stream_json_array(csv_path):
         if not isinstance(e, dict):
@@ -152,7 +161,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         if is_device(e):
             dev_count += 1
             tt = e["args"].get("Task Type", "")
-            compute = any(k in tt for k in ("AI_CORE", "AI_VECTOR", "AICORE", "AIVEC", "MIX", "VECTOR"))
+            compute = any(k in tt for k in threshold("trace_view", "compute_task_types", ["AI_CORE", "AI_VECTOR", "AICORE", "AIVEC", "MIX", "VECTOR"]))
             ts = parse_ts_ns(e.get("ts"))
             dn = dur_ns(e.get("dur"))
             end = ts + dn
@@ -171,11 +180,11 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
                     prev_end, prev_name = last_end[key]
                     gap = ts - prev_end
                     if gap > 0:
-                        if gap < 10000:
+                        if gap < _gb[0] * 1000:
                             gap_buckets["<10us"] += 1
-                        elif gap < 50000:
+                        elif gap < _gb[1] * 1000:
                             gap_buckets["10-50us"] += 1
-                        elif gap < 200000:
+                        elif gap < _gb[2] * 1000:
                             gap_buckets["50-200us"] += 1
                         else:
                             gap_buckets[">200us"] += 1
@@ -205,7 +214,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
                     disp_stats["count"] += 1
                     disp_stats["sum"] += lat
                     disp_stats["max"] = max(disp_stats["max"], lat)
-                    if len(disp_lat) < 200000:
+                    if len(disp_lat) < threshold("trace_view", "disp_lat_sample_cap", 200000):
                         disp_lat.append(lat)
                     entry = (lat, dev_name)
                     if len(disp_top) < top_k:
@@ -230,8 +239,23 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         elif ph == "X" and str(name).startswith("AscendCL@") and "ompile" in name:
             acl_compile[name] += 1
             acl_compile_dur += dur_ns(e.get("dur"))
-            if len(compile_ts) < 500000:
+            if len(compile_ts) < threshold("trace_view", "compile_ts_cap", 500000):
                 compile_ts.append(parse_ts_ns(e.get("ts")))
+
+        elif ph == "C" and isinstance(e.get("args"), dict) and "MHz" in e["args"]:
+            mhz = e["args"]["MHz"]
+            freq_values.append(mhz)
+            freq_max = max(freq_max, mhz)
+
+        elif cat == "GC" and ph == "X":
+            gc_events.append((dur_ns(e.get("dur")), name))
+
+        elif ph == "X" and "SynchronizeStream" in str(name):
+            sync_stream_count += 1
+            sync_stream_dur += dur_ns(e.get("dur"))
+
+        elif ph == "X" and str(name) == "Node@launch":
+            node_launch_count += 1
 
     if dev_count == 0 and not caps:
         return f"[trace_view] Empty or unrecognized file: {csv_path}"
@@ -327,9 +351,9 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         early_frac = None
         if compile_ts and dev_min is not None and dev_max is not None and dev_max > dev_min:
             span = dev_max - dev_min
-            early = sum(1 for t in compile_ts if (t - dev_min) / span < 0.2)
+            early = sum(1 for t in compile_ts if (t - dev_min) / span < threshold("trace_view", "compile_early_window", 0.2))
             early_frac = early / len(compile_ts)
-        if early_frac is not None and early_frac >= 0.8:
+        if early_frac is not None and early_frac >= threshold("trace_view", "compile_early_frac", 0.8):
             L.append(f"    Distribution: {early_frac*100:.0f}% in first 20% of timeline → **Type A: warmup compilation**.")
             L.append("    → Collection issue: increase schedule skip_first to skip warmup — not a real bottleneck.")
         elif early_frac is not None:
@@ -351,6 +375,34 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     elif caps.get("cpu_op", 0) and has_callstack and not acl_compile:
         L.append("  No significant H2D copy or repeated allocation ops found (aten::to / copy_ / empty etc.).")
         L.append("")
+
+    # AI Core frequency degradation
+    if freq_values and freq_max > 0:
+        decrease_ratio = sum(freq_max - f for f in freq_values) / (freq_max * len(freq_values))
+        if decrease_ratio >= threshold("trace_view", "freq_decrease_ratio", 0.05):
+            L.append(f"  [DEFINITE] AI Core frequency degradation: {decrease_ratio*100:.1f}% "
+                     f"(max={freq_max}MHz, min={min(freq_values)}MHz)")
+            L.append("    → Thermal/power throttling. Check: cooling, power limit, or reduce compute intensity.")
+            L.append("")
+
+    # GC events
+    if gc_events:
+        gc_total = sum(d for d, _ in gc_events)
+        gc_sorted = sorted(gc_events, key=lambda x: -x[0])
+        L.append(f"  [SIGNAL] Python GC: {len(gc_events)} events, total {format_duration_ms(gc_total/1000)}")
+        L.append("    Top GC events:")
+        for dur, name in gc_sorted[:3]:
+            L.append(f"      {format_duration_ms(dur/1000)}  {name[:60]}")
+        L.append("    → Cross-validate: if GC frequent, check for excessive small tensor allocations (operator_memory).")
+        L.append("")
+
+    # Stream synchronization
+    if sync_stream_count > 0 and node_launch_count > 0:
+        co_ratio = sync_stream_count / node_launch_count * 100
+        if co_ratio > threshold("trace_view", "sync_co_ratio", 10):
+            L.append(f"  [DEFINITE] Frequent stream synchronization: {sync_stream_count} sync vs {node_launch_count} launches ({co_ratio:.1f}%)")
+            L.append("    → Likely ASCEND_LAUNCH_BLOCKING=1 or explicit syncs. Check env vars and .item()/.numpy() usage.")
+            L.append("")
 
     return "\n".join(L)
 

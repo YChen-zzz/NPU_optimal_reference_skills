@@ -113,6 +113,29 @@ memory_record 高频抖动 + operator_memory 同尺寸反复分配 + trace_view 
 → 分析模式: 异常定位(avg duration <20us 离群)
 → 行动：fp16/bf16 启用融合算子减少 kernel 数,或图编译
 
+### Communication Wait% > 80% + step_trace 通信占比高
+
+communication.json 中 Wait Time 占总通信时间 >80% + step_trace Communication 列占比高
+
+→ **同步瓶颈（非带宽问题）**：通信时间几乎全在等，不在传
+→ 分析模式: 横向关联(communication + trace_view + step_trace 三方收敛)
+→ 行动：查通信-计算重叠（hide_latency）、查 straggler rank（某 rank 慢导致其他等）、减少同步点
+
+---
+
+### Projected peak > 80% HBM after waste elimination
+
+operator_memory 的 Parallelism Trigger 分析显示:消除短命大 tensor(waste)后,投影峰值仍 > 80% HBM
+
+→ **单卡真正放不下**(不是浪费导致,是必要数据太大)
+→ 分析模式: 差异对比(waste vs essential 的分类)
+→ 行动: **此处 profiling 分析到头了**——需要转入源码分析:
+  1. 读 parallel_design.md 理解切分原则
+  2. 用 operator_details Call Stack 定位大 tensor 的源码位置
+  3. 从计算结构判断哪些维度可切
+  4. 切分后重新 profiling 验证
+→ 注意: 不要在 profiling 层面试图决定怎么切——切分方案依赖计算图结构,只有源码能回答
+
 ---
 
 ## 脚本信息不够时的深入方法

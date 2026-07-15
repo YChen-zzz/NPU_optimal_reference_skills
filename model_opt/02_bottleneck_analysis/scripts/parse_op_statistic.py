@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_ascend_profiler_output, read_csv_all, safe_float, safe_int
+from common import threshold, find_ascend_profiler_output, read_csv_all, safe_float, safe_int
 
 
 def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
@@ -65,15 +65,16 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
     top3_us = sum(r["_total_us"] for r in rows_sorted[:3])
     top3_ratio = top3_us / total_us * 100 if total_us > 0 else 0
     lines.append(f"- [DEFINITE] Top-3 concentration: {top3_ratio:.1f}% of total device time")
-    if top3_ratio > 80:
+    if top3_ratio > threshold("op_statistic", "top3_concentration", 80):
         lines.append(f"  → Bottleneck highly concentrated — optimizing top ops has strong leverage")
 
     # 2. Data movement overhead (non-compute ops)
-    move_keywords = ("Transpose", "Cast", "Copy", "Contiguous", "Reshape", "MemSet", "Format")
+    move_keywords = tuple(threshold("op_statistic", "move_keywords",
+                                    ["Transpose", "Cast", "Copy", "Contiguous", "Reshape", "MemSet", "Format"]))
     move_us = sum(r["_total_us"] for r in rows_sorted
                   if any(kw.lower() in r.get("OP Type", "").lower() for kw in move_keywords))
     move_ratio = move_us / total_us * 100 if total_us > 0 else 0
-    if move_ratio > 3:
+    if move_ratio > threshold("op_statistic", "data_movement_ratio", 3):
         move_ops = [r.get("OP Type", "") for r in rows_sorted
                     if any(kw.lower() in r.get("OP Type", "").lower() for kw in move_keywords)
                     and r["_total_us"] > 0]
