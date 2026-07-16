@@ -180,6 +180,8 @@ export TASK_QUEUE_ENABLE=2    # Host-Device 异步流水，获得接近生产环
 export CPU_AFFINITY_CONF=1    # CPU 绑核，减少调度抖动，使采集数据稳定可复现
 ```
 
+> 完整的环境变量清单（含性能优化变量和 Python 级设置）见 [environment_reference.md](references/environment_reference.md)「环境变量配置清单」。
+
 ### 重要默认行为
 
 1. **不要修改业务代码中的 CUDA 写法**：通过 `import torch_npu` + `transfer_to_npu`，业务代码中的 `.cuda()` 会自动转为 NPU 调用。Profiling 代码使用 `torch_npu.profiler` 是必要的，但业务脚本保持原样。

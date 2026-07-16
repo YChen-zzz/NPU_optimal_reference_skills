@@ -1,0 +1,216 @@
+# NPU 融合算子目录
+#
+# 维护方式：
+#   - name/signature: 通过 dir(torch_npu) 扫描 + 签名 probing 生成
+#   - dtypes/constraints: 查阅昇腾官方 API 文档填入
+#     文档入口：https://www.hiascend.com/document/detail/zh/Pytorch/700/apiref/apilist/ptaoplist_000154.html
+#     搜索方式：site:hiascend.com torch_npu <算子名>
+#   - pitfalls: 实际使用中踩坑后追加（官方文档不一定记录运行时陷阱）
+#   - agent 发现新算子时追加到此文件
+# 按算子名字母排序。
+
+operators:
+  - name: npu_add_layer_norm
+    signature: "out1, out2, out3, out4 = torch_npu.npu_add_layer_norm(x1, x2, gamma, beta, epsilon=1e-5, additional_output=False)"
+    dtypes: [fp16, fp32]  # 官方文档未详列，参考 npu_add_rms_norm 推断；bf16 待确认
+    replaces: "add + layer_norm (2 kernels → 1)"
+    pattern: "残差加法 + LayerNorm"
+    constraints:
+      - "返回 4 个值，具体含义需查官方文档确认"
+      - "additional_output 参数控制额外输出"
+
+  - name: npu_add_rms_norm
+    signature: "normed, rstd, residual = torch_npu.npu_add_rms_norm(x1, x2, weight, epsilon=1e-6)"
+    dtypes: [fp16, bf16, fp32]
+    replaces: "add + rms_norm (2 kernels → 1)"
+    pattern: "残差加法 + RMSNorm"
+    constraints:
+      - "第 1 个返回值是 normed，第 3 个是 residual，容易搞反"
+    returns:
+      - {name: normed, desc: "rms_norm(x1 + x2) 的输出"}
+      - {name: rstd, desc: "推理可忽略"}
+      - {name: residual, desc: "x1 + x2 的和，可直接作为下一层残差输入"}
+
+  - name: npu_add_rms_norm_cast
+    signature: "normed, rstd, residual = torch_npu.npu_add_rms_norm_cast(x1, x2, gamma, epsilon=1e-6)"
+    dtypes: [fp16, bf16, fp32]  # 参考 npu_add_rms_norm
+    replaces: "add + rms_norm + dtype cast"
+    pattern: "残差加法 + RMSNorm (含 cast 变体)"
+    constraints:
+      - "与 npu_add_rms_norm 区别：无 beta 参数，内部含 cast 逻辑"
+
+  - name: npu_attn_softmax_
+    signature: "output = torch_npu.npu_attn_softmax_(input)  # in-place"
+    dtypes: [fp16, fp32]  # 官方文档未详列，参考 attention 相关算子推断
+    replaces: "attention mask + softmax"
+    pattern: "Attention Softmax (含 mask)"
+    constraints:
+      - "in-place 操作，修改输入 tensor"
+
+  - name: npu_fast_gelu
+    signature: "output = torch_npu.npu_fast_gelu(input)"
+    dtypes: [fp16, fp32, bf16]  # bf16 仅 Atlas A2 训练系列支持
+    replaces: "GELU activation"
+    pattern: "GELU 激活 (快速版)"
+    constraints:
+      - "计算公式与 npu_gelu 不同（近似公式），精度可能有差异"
+      - "bf16 仅 Atlas A2 训练系列产品支持"
+
+  - name: npu_ffn
+    signature: "output = torch_npu.npu_ffn(input, weight1, weight2, activation='swish')"
+    dtypes: [fp16, bf16]
+    replaces: "Linear + Act + Linear (FFN)"
+    pattern: "FeedForward (仅 fp16/bf16)"
+    constraints:
+      - "fp32 不支持"
+      - "activation 需为受支持类型"
+
+  - name: npu_fused_infer_attention_score
+    signature: "attn_output, softmax_lse = torch_npu.npu_fused_infer_attention_score(query, key, value, num_heads=, input_layout='BNSD', scale=, pre_tokens=, next_tokens=)"
+    dtypes: [fp16, bf16]
+    replaces: "per-step matmul (decode attention with KV cache)"
+    pattern: "增量 Attention (decode)"
+    constraints:
+      - "参数名与 FA 不同: num_heads (非 head_num), pre_tokens (非 pre_tockens, 拼写正确)"
+      - "图编译兼容，替代 npu_fusion_attention 的图模式方案"
+
+  - name: npu_fused_infer_attention_score_v2
+    signature: "attn_output, *_ = torch_npu.npu_fused_infer_attention_score_v2(query, key, value, *, query_rope=, key_rope=, pse_shift=, atten_mask=, actual_seq_qlen=, actual_seq_kvlen=, ...)"
+    dtypes: [fp16, bf16]  # 参考 v1
+    replaces: "per-step matmul (decode attention, v2, 含 RoPE/dequant)"
+    pattern: "增量 Attention v2 (decode, 含 RoPE)"
+    constraints:
+      - "v2 版本，参数更丰富（含 RoPE、dequant 等），具体约束需查官方文档"
+
+  - name: npu_fusion_attention
+    signature: "attn_output, *_ = torch_npu.npu_fusion_attention(query, key, value, head_num=, input_layout='BSND', scale=, pre_tockens=, next_tockens=, pse=, atten_mask=, keep_prob=1.0)"
+    dtypes: [fp16, bf16, fp32]
+    replaces: "matmul(Q,K^T) + add_bias + softmax + matmul(attn,V)"
+    pattern: "Attention (QK^T + bias + softmax + V)"
+    constraints:
+      - "eager 模式支持 fp32；GE 图模式仅 fp16/bf16"
+      - "与 torch.compile 图模式不兼容 (multi-stream)，需用 FIA 替代"
+      - "pre_tockens / next_tockens 是 CANN 官方拼写 (非 pre_tokens)"
+      - "pse (position bias) dtype 必须与 query 一致，不一致时静默产生错误结果"
+      - "返回 7 个值，推理只用第 1 个，用 *_ 丢弃"
+      - "Fallback 场景: KV cache / cross-attention / output_attentions / head pruning"
+      - "input_layout 支持: BSH / SBH / BSND / BNSD / TND"
+
+  - name: npu_fusion_attention_v2
+    signature: "attn_output, *_ = torch_npu.npu_fusion_attention_v2(query, key, value, head_num, input_layout, *, pse=, padding_mask=, atten_mask=, query_rope=, key_rope=, scale=1., keep_prob=1., pre_tokens=, next_tokens=, ...)"
+    dtypes: [fp16, bf16, fp32]  # 参考 v1
+    replaces: "matmul(Q,K^T) + add_bias + softmax + matmul(attn,V) (v2, 含 RoPE)"
+    pattern: "Attention v2 (含 RoPE)"
+    constraints:
+      - "v2 版本，参数拼写正确 (pre_tokens 非 pre_tockens)"
+      - "支持 RoPE (query_rope, key_rope)、prefix 等更多场景"
+      - "具体约束需查官方文档"
+
+  - name: npu_gelu
+    signature: "output = torch_npu.npu_gelu(input, *, approximate='none')"
+    dtypes: [fp16, fp32, bf16]
+    replaces: "GELU activation (支持 approximate 参数)"
+    pattern: "GELU 激活"
+    constraints:
+      - "approximate='none' 为精确 GELU，'tanh' 为近似 GELU"
+
+  - name: npu_geglu
+    signature: "output, gate = torch_npu.npu_geglu(input, dim=-1, approximate=1, activate_left=False)"
+    dtypes: [fp16, fp32, bf16]  # bf16 仅 Atlas A2 训练系列支持
+    replaces: "gelu(wi_0(x)) * wi_1(x) (Gated-GELU FFN)"
+    pattern: "Gated-GELU FFN"
+    constraints:
+      - "output 和 gate 在 dim 维的 size 等于 input 在 dim 维 size 的 1/2"
+      - "approximate: 0=none, 1=tanh"
+      - "activate_left: 控制激活函数作用于左半还是右半"
+      - "bf16 仅 Atlas A2 训练系列产品支持"
+
+  - name: npu_group_norm_silu
+    signature: "out, mean, rstd = torch_npu.npu_group_norm_silu(input, weight, bias, group, eps=1e-5)"
+    dtypes: [fp16, fp32, bf16]  # bf16 仅 Atlas A2 训练系列支持
+    replaces: "group_norm + silu"
+    pattern: "GroupNorm + SiLU"
+    constraints:
+      - "input 维度需大于一维"
+      - "weight/bias 维度为 1 且元素数量需与 input 第 1 维度相同"
+      - "bf16 仅 Atlas A2 训练系列产品/Atlas 800I A2 推理产品支持"
+
+  - name: npu_group_norm_swish
+    signature: "out, mean, rstd = torch_npu.npu_group_norm_swish(input, num_groups, weight, bias, eps=1e-5, swish_scale=1.)"
+    dtypes: [fp16, fp32, bf16]  # 参考 npu_group_norm_silu
+    replaces: "group_norm + swish"
+    pattern: "GroupNorm + Swish"
+    constraints:
+      - "swish_scale 控制 Swish 激活的缩放因子"
+      - "具体约束参考 npu_group_norm_silu"
+
+  - name: npu_linear
+    signature: "output = torch_npu.npu_linear(input_2d, weight)"
+    dtypes: [fp16, bf16, fp32]
+    replaces: "F.linear (含内部 weight.t())"
+    pattern: "Linear 无 bias"
+    constraints:
+      - "仅支持 2D 输入，3D+ 需 view(-1, dim) 再调用"
+      - "不支持 bias"
+      - "内部自动做 weight 转置，不需要手动 .t()"
+
+  - name: npu_mish
+    signature: "output = torch_npu.npu_mish(input)"
+    dtypes: [fp16, fp32]  # 官方文档未详列，参考同类激活算子推断
+    replaces: "Mish activation"
+    pattern: "Mish 激活"
+    constraints: []
+
+  - name: npu_multi_head_attention
+    signature: "out, *_ = torch_npu.npu_multi_head_attention(query, key, value, query_weight, key_weight, value_weight, attn_mask, out_proj_weight, query_bias=, key_bias=, value_bias=, out_proj_bias=, dropout_mask=, attn_head_num=, attn_dim_per_head=, src_len=, tgt_len=, dropout_prob=, softmax_use_float=)"
+    dtypes: [fp16, fp32]  # 官方示例使用 fp16
+    replaces: "完整 MHA (QKV 投影 + attention + output 投影)"
+    pattern: "Multi-Head Attention (完整)"
+    constraints:
+      - "参数众多，包含 QKV 权重和 output 投影权重"
+      - "softmax_use_float 控制 softmax 是否在 float32 计算"
+      - "需要传入 dropout_mask（推理时传 None 或全 1）"
+
+  - name: npu_rms_norm
+    signature: "normed, rstd = torch_npu.npu_rms_norm(input, weight, epsilon=1e-6)"
+    dtypes: [fp16, bf16, fp32]
+    replaces: "pow(2) + mean + rsqrt(+eps) + mul + mul(weight)"
+    pattern: "RMSNorm"
+    constraints:
+      - "weight 必须与 input 同 dtype"
+      - "input shape 支持 2-8 维"
+    returns:
+      - {name: normed, desc: "归一化输出"}
+      - {name: rstd, desc: "推理时可忽略"}
+
+  - name: npu_silu
+    signature: "output = torch_npu.npu_silu(input)"
+    dtypes: [fp16, fp32]
+    replaces: "SiLU activation"
+    pattern: "SiLU 激活"
+    constraints:
+      - "该接口计划废弃，可以使用 torch.nn.functional.silu 接口进行替换"
+
+  - name: npu_swiglu
+    signature: "output = torch_npu.npu_swiglu(input, dim=-1)"
+    dtypes: [fp16, bf16, fp32]
+    replaces: "silu(wi_0(x)) * wi_1(x) (2 Linear + silu + mul)"
+    pattern: "Gated-SiLU FFN"
+    constraints:
+      - "dim 对应的维度大小必须能被 2 整除"
+
+  - name: npu_transpose_batchmatmul
+    signature: "output = torch_npu.npu_transpose_batchmatmul(input, weight, *, bias=None, scale=None, perm_x1=, perm_x2=, perm_y=, batch_split_factor=1)"
+    dtypes: [fp16, fp32]  # 官方文档未详列，参考 matmul 类算子推断
+    replaces: "transpose + batch_matmul (消除显式 transpose)"
+    pattern: "Transpose + BatchMatMul"
+    constraints:
+      - "通过 perm_x1/perm_x2/perm_y 参数控制输入输出的转置，避免显式 transpose 算子"
+      - "batch_split_factor 控制批量拆分因子"
+
+cross_operator_pitfalls:
+  - "FA 用 pre_tockens (CANN typo) / head_num；FIA 和 FA v2 用 pre_tokens (正确拼写) / num_heads — 参数名不同"
+  - "FA 返回 7 个值，用 a, *_ = ... 解包；FIA 返回 2 个值"
+  - "多数融合算子返回多值，统一用 result, *_ = 解包更安全"
+  - "npu_silu 和 npu_layer_norm_eval 计划废弃，建议用 torch.nn.functional 中的等价接口替换"
+  - "npu_fast_gelu 与 npu_gelu 计算公式不同（近似公式不同），精度可能有差异，不能随意互换"

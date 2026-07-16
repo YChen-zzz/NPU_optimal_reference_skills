@@ -69,19 +69,28 @@ Phase 2 的分析由两条线驱动,顺序执行:
 | **Memory-Bound** | 利用率高但 mte_ratio >> mac_ratio | HBM 带宽瓶颈 |
 | **Allocator-Bound** | 类似 Host-Bound 但 empty_tensor 占比高 | allocator 同步阻塞 |
 
-### 典型工作流
+### 强制脚本检查清单（确认节点 A 前必须完成）
 
 > 脚本位于本 skill 的 `scripts/` 目录。以下 `$S` 代表该目录。
+> **每个脚本必须运行**。跳过任何脚本需在确认节点 A 中说明理由。
+> **必读参考**列的文件在运行对应脚本后**必须加载**——不是"按需"，是"绑定"。
 
-```
-$S/parse_step_trace.py <dir>         → 判断瓶颈侧(host or device)
-$S/parse_op_statistic.py <dir>       → 哪类算子最耗时
-$S/parse_kernel_details.py <dir>     → 硬件单元、小算子、流水 stall
-$S/parse_trace_view.py <dir>         → host→device 下发链、device 空隙、在线编译
-$S/parse_communication.py <dir>      → 多卡通信:时间分解、带宽、同步等待
-$S/parse_memory_record.py <dir>      → 内存峰值、碎片化
-$S/parse_operator_memory.py <dir>    → tensor 生命周期、parallelism trigger
-```
+| # | 脚本 | 作用 | 必读参考（运行后加载） |
+|---|------|------|---------------------|
+| 1 | `$S/parse_step_trace.py <dir>` | 判断瓶颈侧(host or device) | — |
+| 2 | `$S/parse_op_statistic.py <dir>` | 哪类算子最耗时 | — |
+| 3 | `$S/parse_kernel_details.py <dir>` | 硬件单元、小算子、流水 stall | — |
+| 4 | `$S/parse_trace_view.py <dir>` | host→device 下发链、device 空隙、在线编译 | [host_bound_patterns.md](references/host_bound_patterns.md) |
+| 5 | `$S/parse_operator_details.py <dir>` | Call Stack 定位源码、host self duration | [profiling_to_source.md](references/profiling_to_source.md) |
+| 6 | `$S/parse_memory_record.py <dir>` | 内存峰值、碎片化、高频抖动 | [memory_profiling.md](references/memory_profiling.md) |
+| 7 | `$S/parse_operator_memory.py <dir>` | tensor 生命周期、重复同尺寸分配 | [memory_profiling.md](references/memory_profiling.md) |
+
+> 多卡场景额外运行 `$S/parse_communication.py <dir>`。
+
+**门禁规则**：
+- 每个脚本运行后，写一行发现摘要（如"step_trace: Host-Bound, 利用率 8%"）
+- 脚本输出中的任何 **DEFINITE** 信号或 **⚠ 警告**（由脚本自身定义，如"SEVERE Host-Bound"、"AI_CPU detected"、"高频抖动"）**必须**在确认节点 A 中产生对应候选，或附 profiling 数据依据显式排除
+- 未运行脚本 6-7 时，禁止在候选中包含"allocator/buffer 预分配"类优化（无数据支撑）；运行后若 `memory_profiling.md` 中的模式匹配到脚本输出，则对应优化为必选候选
 
 ## 下一步
 

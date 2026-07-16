@@ -48,6 +48,8 @@ print("torchair 版本:", torchair.__version__)
 
 ## 3. 环境变量配置清单
 
+### 基础环境变量
+
 | 变量名 | 作用 | 示例值 |
 |---|---|---|
 | `ASCEND_RT_VISIBLE_DEVICES` | 控制可见 NPU 卡 | `0,1,2,3` |
@@ -56,13 +58,33 @@ print("torchair 版本:", torchair.__version__)
 | `ASCEND_HOME_PATH` | CANN 工具链安装目录 | `~/Ascend/ascend-toolkit/latest` |
 | `LD_LIBRARY_PATH` | 动态库搜索路径（set_env.sh 自动设置） | -- |
 
-```bash
-# 推荐写入 ~/.bashrc 或 activate 脚本
-export ASCEND_RT_VISIBLE_DEVICES=0
-export ASCEND_GLOBAL_LOG_LEVEL=3
-export ASCEND_SLOG_PRINT_TO_STDOUT=0
-source ~/Ascend/ascend-toolkit/latest/set_env.sh
+### 性能环境变量
+
+以下变量通过 `export` 设置（在启动 Python 前），用于优化 NPU 推理性能。
+
+| 变量名 | 作用 | 示例值 | 说明 |
+|---|---|---|---|
+| `TASK_QUEUE_ENABLE` | Host-Device 异步流水 | `2` | 消除逐算子同步等待，是所有 eager 优化的前提 |
+| `CPU_AFFINITY_CONF` | CPU 绑核 | `1` | 减少调度抖动，使采集数据稳定可复现 |
+| `LD_PRELOAD` | 高性能 malloc | `libjemalloc.so` 或 `libtcmalloc.so` | 减少 Python 内存分配开销（`empty_tensor` 高频场景显著） |
+| `PYTORCH_NPU_ALLOC_CONF` | NPU 内存池策略 | `expandable_segments:True` | 减少 NPU 内存碎片，降低 allocator 同步阻塞 |
+| `HCCL_BUFFSIZE` | 通信缓冲区大小（MB） | `32` | 多卡场景优化，单卡推理不需要 |
+
+> `TASK_QUEUE_ENABLE=2` 不开启则每个 kernel 都要等 host 确认，profiling 中表现为 wait time 均匀分布在所有 kernel 上。
+> `LD_PRELOAD` 优先用 `libtcmalloc.so`，若系统未安装可用 CANN 自带的 `libjemalloc.so`（路径如 `~/Ascend_local/cann-8.5.0/aarch64-linux/lib64/libjemalloc.so`）。
+
+### Python 级设置
+
+在 `import torch_npu` 后、模型加载前设置：
+
+```python
+import torch_npu
+torch.npu.set_compile_mode(jit_compile=False)           # 关闭 JIT 编译，保证确定性
+torch_npu.npu.config.allow_internal_format = False       # 关闭内部格式转换，避免隐式 Transpose
 ```
+
+> `allow_internal_format=True` 可减少 Transpose 开销但可能引入微小精度差异。推理优化阶段可尝试开启并验证精度。
+> `jit_compile=True` 可启用 NPU JIT 编译但可能触发 tiling error，需实测验证。
 
 ## 4. 版本配套确认方法
 

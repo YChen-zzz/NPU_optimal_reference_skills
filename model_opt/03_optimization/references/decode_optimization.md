@@ -1,4 +1,4 @@
-# Decode 路径优化思路
+# Decode 路径优化
 
 ## 问题本质
 
@@ -8,7 +8,9 @@
 - 每步都需要 host-device 同步（取 token、检查 EOS）
 - 推理框架（如 HF generate）的通用性设计带来大量冗余逻辑
 
-## 思考路径
+## 优化思路
+
+以下思路是四维度在 decode 场景的具体应用。通用原则（如方向放弃标准、GPU≠NPU）见 [SKILL.md](../SKILL.md)。
 
 ### 思路 1：减少框架开销
 
@@ -30,7 +32,7 @@ GPU 上 StaticCache（预分配）通常最快，因为避免了动态内存分�
 - NPU 的动态拼接算子高度优化
 - 预分配方案在 NPU 上可能展开为更多子 kernel
 
-**必须实测**，不能假设。
+> 注意：框架提供的 Cache 类（DynamicCache / StaticCache）的失败不代表 KV cache 概念无效——框架实现带有 Python 调度开销。放弃前必须测自定义实现（预分配 buffer + BMM），详见 [SKILL.md](../SKILL.md) 方向放弃标准。
 
 ### 思路 3：减少同步次数
 
@@ -66,9 +68,4 @@ GPU 上 StaticCache（预分配）通常最快，因为避免了动态内存分�
 | KV cache 预分配 | max_len 可预知且不太大 | max_len 非常大或不可知 |
 | EOS interval check | 平均生成长度 >> N | 大多数序列很短（多跑代价高） |
 | cross-attn 预计算 | encoder-decoder 架构 | decoder-only 架构 |
-
-## 核心教训
-
-- **不要假设 GPU 上的最优方案在 NPU 上也最优**：每种 KV cache 策略都必须在 NPU 上实测
-- **微基准先行**：先用单独的小脚本量化每个操作的开销（torch.cat vs index write、.item() 同步开销等），再决定优化方向
-- **dispatch/compute ratio > 1 时是理论瓶颈**：eager 模式下每个 kernel 的 Python dispatch 开销是固定的，当计算量很小时 dispatch 占比会超过 compute，此时只能通过减少 kernel 数量（融合、dtype 降精度启用更多融合算子）或图编译来解决
+| 统一数据格式 | decode 中有频繁维度变换 | 已统一格式 |

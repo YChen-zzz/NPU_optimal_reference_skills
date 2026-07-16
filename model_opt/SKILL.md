@@ -72,6 +72,38 @@ Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方�
    - 是否有额外想尝试的方向
 3. 根据用户反馈调整优化清单，仅实施用户确认的条目
 
+#### 优先级覆盖门禁（展示候选前必须完成）
+
+`profiling_to_action.md` 的优先级列表定义了优化方向的理论收益排序。向用户展示候选前，必须为**每个优先级**填写下表。
+
+瓶颈类型由 `parse_step_trace.py` 的输出判定（Host-Bound / Compute-Bound / Memory-Bound / Allocator-Bound）。`profiling_to_action.md` 定义了每种瓶颈类型最相关的优先级。
+
+| 优先级 | 类型 | 状态 | 备注 |
+|-------|------|------|------|
+| 1 | 显式同步 | □有候选 / □已排除(附依据) / □不适用 | |
+| 2 | 在线编译 | □有候选 / □已排除(附依据) / □不适用 | |
+| 3 | 图编译 | □有候选 / □已排除(附依据) / □不适用 | |
+| 4 | allocator 同步 | □有候选 / □已排除(附依据) / □不适用 | |
+| 5 | 框架 dispatch | □有候选 / □已排除(附依据) / □不适用 | |
+| 6 | 碎片算子融合 | □有候选 / □已排除(附依据) / □不适用 | |
+| 7 | 数据布局 | □有候选 / □已排除(附依据) / □不适用 | |
+| 8 | kernel 本身慢 | □有候选 / □已排除(附依据) / □不适用 | |
+
+**门禁规则**：
+- 对于 `parse_step_trace.py` 判定的瓶颈类型，`profiling_to_action.md` 映射到该类型的优先级**不可**标记"不适用"——必须有候选或附 profiling 数据依据的"已排除"
+- "已排除"必须引用具体脚本输出作为依据（如"`parse_operator_memory.py` 显示无高频分配"），不可凭空判断
+
+#### Line A 产出完整性门禁
+
+Line A（源码分析）的产出必须包含以下两项分析结果，且其中的发现必须对应候选：
+
+1. **穿透层级量化**（见 [proactive_source_analysis.md](02_bottleneck_analysis/references/proactive_source_analysis.md)「穿透层级量化」）：
+   - 调用链中任何层贡献 > 10% 的 total host time → 该层**必须**有对应候选
+
+2. **热路径操作审计表**（见 [proactive_source_analysis.md](02_bottleneck_analysis/references/proactive_source_analysis.md)「热路径操作审计表」）：
+   - 审计表中任何维度标记为"是"或"否(不随输入变)"的操作 → 该操作**必须**有对应候选
+   - 用 `parse_op_statistic.py` / `parse_operator_memory.py` 数据量化影响范围，占比 <1% 的可跳过
+
 ### 确认节点 B：提交前审核（Phase 4 → Phase 5 之间）
 
 本批优化的精度验证和 profiling 确认均通过后、git commit 前，**必须**向用户展示本批总结并等待确认：
