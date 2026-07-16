@@ -80,7 +80,7 @@
 2. **原文摘录**: phenomenon.signals.content 和 analysis_path.steps.observation 尽量贴脚本原始输出。
 3. **失败必记**: optimization.attempts 中 rejected 的方案和 failure_reason 是最有价值的信息。
 4. **一次优化阶段一个文件**: 每经过一轮完整的 Phase 2→4,写一个案例文件。
-5. **不强求归类**: bottleneck_type 和 dimension 能判断就写,判断不了写"unclear"。
+5. **不强求归类**: bottleneck_type 和 dimension 能判断就写,判断不了写"mixed"并在 description 中说明。
 
 ## 目录结构
 

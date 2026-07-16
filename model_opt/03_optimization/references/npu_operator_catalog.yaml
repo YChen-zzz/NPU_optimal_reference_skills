@@ -144,6 +144,15 @@ operators:
       - "swish_scale 控制 Swish 激活的缩放因子"
       - "具体约束参考 npu_group_norm_silu"
 
+  - name: npu_layer_norm_eval
+    signature: "output = torch_npu.npu_layer_norm_eval(input, normalized_shape, weight=None, bias=None, eps=1e-5)"
+    dtypes: [fp16, fp32, bf16]
+    replaces: "layer_norm (推理优化版)"
+    pattern: "LayerNorm (推理)"
+    constraints:
+      - "该接口计划废弃，建议使用 torch.nn.functional.layer_norm 替换"
+      - "支持 Atlas 训练/A2/A3/推理系列"
+
   - name: npu_linear
     signature: "output = torch_npu.npu_linear(input_2d, weight)"
     dtypes: [fp16, bf16, fp32]

@@ -46,6 +46,8 @@ NPU 提供将已知算子模式合并为单 kernel 的融合算子（如 `npu_rm
 
 ## 消除：去掉不产生有用结果的操作
 
+> 以下问题的发现方法（grep 命令 + 影响描述）见 [npu_checklist.md](npu_checklist.md)，此处聚焦消除手段。
+
 ### 死代码
 
 函数返回 tuple 但调用方只取第一个值——删除未使用分支的全部计算。保留 `__init__` 中的参数定义确保 checkpoint 兼容，只删 forward 中的执行路径。

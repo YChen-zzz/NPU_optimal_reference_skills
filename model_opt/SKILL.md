@@ -5,6 +5,13 @@ description: 指导将深度学习模型适配到昇腾 NPU 并进行性能优�
 
 # NPU 模型适配优化
 
+## ⚠ 启动协议
+
+无论从哪个子技能进入，执行前必须：
+1. 确认当前在哪个 Phase（参见下方「全流程」）
+2. 确认上一个 Phase 的产出已完成
+3. 按全流程顺序执行，不跳步
+
 ## 核心原则
 
 - **Profiling 驱动**：所有优化决策必须有 profiling 数据支撑
@@ -46,11 +53,14 @@ Phase 1  前期准备
 │          └─ ② 阶段末重新采集 L0，与基线/上一轮快速比对确认收益        │
 └──────────────────────────────────────────────────────────────────┘
    ↓
- ★ B  用户确认提交（展示本批总结 → 确认/回退）
+ ★ B  用户确认提交（展示本批总结 + evidence_db 已记录 → 确认/回退）
    ↓
 Phase 5  工程化提交（git commit + 更新优化日志）
    ↓
-   └──→ 瓶颈转移？──→ 回到 Phase 2 开启下一轮（重新采集 L1 分析新瓶颈）
+ ★ C  用户确认是否继续（展示本轮总结 + 剩余瓶颈 → 继续/停止）
+   ↓
+ ├─ 继续 → 回到 Phase 2 开启下一轮（重新采集 L1 分析新瓶颈）
+ └─ 停止 → 结束
 ```
 
 > **三个采集级别在流程中的落点**（L0/L1/L2 为 profiling 采集级别，与上文精度验证的 Level 1/Level 2 是不同概念）：
@@ -74,9 +84,9 @@ Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方�
 
 #### 优先级覆盖门禁（展示候选前必须完成）
 
-`profiling_to_action.md` 的优先级列表定义了优化方向的理论收益排序。向用户展示候选前，必须为**每个优先级**填写下表。
+[profiling_to_action.md](02_bottleneck_analysis/references/profiling_to_action.md) 的优先级列表定义了优化方向的理论收益排序。向用户展示候选前，必须为**每个优先级**填写下表。
 
-瓶颈类型由 `parse_step_trace.py` 的输出判定（Host-Bound / Compute-Bound / Memory-Bound / Allocator-Bound）。`profiling_to_action.md` 定义了每种瓶颈类型最相关的优先级。
+瓶颈类型由 `parse_step_trace.py` 的输出判定（Host-Bound / Compute-Bound / Memory-Bound / Allocator-Bound）。[profiling_to_action.md](02_bottleneck_analysis/references/profiling_to_action.md) 定义了每种瓶颈类型最相关的优先级。
 
 | 优先级 | 类型 | 状态 | 备注 |
 |-------|------|------|------|
@@ -110,10 +120,23 @@ Line A（源码分析）的产出必须包含以下两项分析结果，且其�
 
 1. 总结本批实施的所有优化点及实际效果（性能数据 + 精度数据）
 2. 列出未采纳的方案及原因
-3. 使用 `ask_user_question` 询问用户：
+3. 确认 evidence_db 案例已按 [schema](06_evidence_db/schema.md) 记录到项目工作目录的 `evidence_db/` 下（展示案例文件路径）
+4. 使用 `ask_user_question` 询问用户：
    - 是否确认提交本批优化
    - 是否需要回退某些改动
-4. 用户确认后才执行 git commit
+5. 用户确认后才执行 git commit
+
+> 案例未记录 = 不允许提交。与"精度未通过 = 不允许提交"同等约束力。
+
+### 确认节点 C：继续优化确认（Phase 5 之后）
+
+git commit 完成后，**必须**向用户展示本轮总结并询问是否继续：
+
+1. 展示本轮优化总结（性能提升 + 精度状态）
+2. 展示当前剩余瓶颈（最新 profiling 数据）
+3. 使用 `ask_user_question` 询问用户：是否继续下一轮优化？
+4. 用户确认继续 → 回到 Phase 2 开启下一轮（重新采集 L1）
+5. 用户确认停止 → 结束
 
 ## 子技能索引
 
@@ -148,10 +171,12 @@ Line A（源码分析）的产出必须包含以下两项分析结果，且其�
 
 **★ 确认节点 B**：向用户展示本批总结（优化点、性能收益、精度数据、未采纳方案），询问是否确认提交。用户确认后才执行 git commit。
 
-**Phase 5 工程化提交**：全部工作在 optimize/ 分支进行，每批一个 commit，用户确认后合入 main。维护优化日志记录每批的优化点、修改、效果和未采纳方案。提交前按 [06_evidence_db/schema.md](06_evidence_db/schema.md) 将本轮优化案例记录到项目工作目录的 `evidence_db/` 下（与 `profiling/` 同级）。
+**Phase 5 工程化提交**：全部工作在 optimize/ 分支进行，每批一个 commit，用户确认后合入 main。维护优化日志记录每批的优化点、修改、效果和未采纳方案。**必须先按 [06_evidence_db/schema.md](06_evidence_db/schema.md) 将本轮优化案例记录到项目工作目录的 `evidence_db/` 下（与 `profiling/` 同级），再执行 git commit**——案例未记录不允许提交（见确认节点 B 第 3 步）。
 
 ## 迭代退出条件
 
-- 性能达到预设目标
-- Profiling 显示剩余瓶颈已无优化空间
-- 进一步优化的边际收益低于工程维护成本
+由用户在确认节点 C 中决定是否继续。以下信息供 agent 在展示时参考：
+
+- 性能是否达到预设目标
+- Profiling 显示剩余瓶颈是否还有优化空间
+- 进一步优化的边际收益是否低于工程维护成本

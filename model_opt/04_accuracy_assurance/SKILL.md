@@ -1,6 +1,6 @@
 ---
 name: NPU 精度保证
-description: 确保 NPU 优化后的模型精度正确，包括基线管理、分层验证和精度调试。当用户关注精度验证、输出对比或精度问题定位时触发。
+description: Phase 4 精度保证。确保 NPU 优化后的模型精度正确，包括基线管理、分层验证和精度调试。当用户关注精度验证、输出对比或精度问题定位时触发。执行前参见根 SKILL.md 全流程。
 ---
 
 # NPU 精度保证
@@ -119,7 +119,7 @@ NPU 结果必须可复现。推理和训练各有侧重：
 **推理**：若结果不可复现，排查：随机性未关闭、JIT 编译引入不确定性、NPU 内部格式转换引入偏差。
 
 **训练**（确定性要求更严格，是单步对齐的前提）：
-- 固定所有随机种子：`random.seed()` / `np.random.seed()` / `torch.manual_seed()` / `torch.cuda.manual_seed_all()`
+- 固定所有随机种子：`random.seed()` / `np.random.seed()` / `torch.manual_seed()` / `torch.npu.manual_seed_all()`
 - `torch.backends.cudnn.deterministic = True`，关闭 `benchmark`
 - `torch.use_deterministic_algorithms(True)`（如适用）
 - DataLoader 设置 `worker_init_fn` 固定各 worker 种子

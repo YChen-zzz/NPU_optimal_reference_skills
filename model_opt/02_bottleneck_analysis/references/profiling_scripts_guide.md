@@ -131,8 +131,6 @@ python parse_kernel_details.py /path/to/profiling --filter Transpose Softmax --t
 
 ---
 
----
-
 ### parse_memory_record.py
 
 **输入**：`memory_record.csv`（按时间记录的内存占用，含 APP 定时采样和 PTA 事件触发两种记录）

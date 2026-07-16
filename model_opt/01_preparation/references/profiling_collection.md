@@ -3,6 +3,23 @@
 > **路径规范**：所有 profiling 输出必须保存到 `<workspace>/profiling/<timestamp>/`，禁止使用 `/tmp` 或固定路径。详见 01_preparation/SKILL.md「Profiling 输出路径规范」。以下模板使用 `profiling_dir` 变量，调用前按下方 §0 构造。
 >
 > **一致性要求**：agent 为项目编写采集脚本时，必须遵循主 SKILL.md「标准化操作规范」中的约束（环境变量、时间戳目录、运行日志、可复现性）。以下为模板示例，需按项目实际适配。
+>
+> **采集与业务分离原则**：采集脚本只负责"包围"业务调用（`with profiler.profile(...): run_inference(...)`），不嵌入业务逻辑。业务推理逻辑用函数封装（如 `run_inference(model, input_data)`），优化改这个函数，采集脚本不改。这样多次优化对比时用同一个采集脚本跑 before/after，确保采集条件一致。
+```python
+# business.py — 业务代码，被优化的是这里
+def run_inference(model, input_data):
+    """推理入口，优化改这里，采集脚本不改"""
+    return model(input_data)
+
+# profile.py — 采集脚本，只调用 run_inference，不改
+def profile_run(profiling_dir, model, input_data):
+    with torch_npu.profiler.profile(
+        activities=[...],
+        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_dir)
+    ) as prof:
+        run_inference(model, input_data)
+        prof.step()
+```
 
 ## 0. 通用前置：路径构造
 

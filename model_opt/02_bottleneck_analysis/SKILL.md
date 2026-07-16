@@ -1,6 +1,6 @@
 ---
 name: NPU 瓶颈分析
-description: 分析昇腾 NPU 性能瓶颈——包含源码结构分析(主动发现结构性冗余)和 Profiling 数据分析(定位可见瓶颈)两条线。当用户要求分析性能、定位瓶颈、查看 profiling 数据、分析源码优化机会时触发。
+description: Phase 2 瓶颈分析。分析昇腾 NPU 性能瓶颈——包含源码结构分析(主动发现结构性冗余)和 Profiling 数据分析(定位可见瓶颈)两条线。当用户要求分析性能、定位瓶颈、查看 profiling 数据、分析源码优化机会时触发。执行前参见根 SKILL.md 全流程。
 ---
 
 # NPU 瓶颈分析
@@ -85,7 +85,7 @@ Phase 2 的分析由两条线驱动,顺序执行:
 | 6 | `$S/parse_memory_record.py <dir>` | 内存峰值、碎片化、高频抖动 | [memory_profiling.md](references/memory_profiling.md) |
 | 7 | `$S/parse_operator_memory.py <dir>` | tensor 生命周期、重复同尺寸分配 | [memory_profiling.md](references/memory_profiling.md) |
 
-> 多卡场景额外运行 `$S/parse_communication.py <dir>`。
+> 多卡场景额外运行 `$S/parse_communication.py <dir>` 分析通信开销（HCCL all-reduce/all-gather 等）。
 
 **门禁规则**：
 - 每个脚本运行后，写一行发现摘要（如"step_trace: Host-Bound, 利用率 8%"）

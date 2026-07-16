@@ -22,10 +22,10 @@
 
 查看 `parse_kernel_details.py` 的 Wait Time Distribution。
 
-**Level0 vs Level1**：Level1 在每个 kernel 前后插入 barrier，破坏 TASK_QUEUE 异步流水。Level1 的 bubble 大部分是 profiler 注入的。
+**L0 vs L1**：L1 在每个 kernel 前后插入 barrier，破坏 TASK_QUEUE 异步流水。L1 的 bubble 大部分是 profiler 注入的。
 
 确认方法：
-- Level0 重新采集
+- L0 重新采集
 - 对比两次的 Computing/Free 时间
 - wall-clock 延迟交叉验证
 

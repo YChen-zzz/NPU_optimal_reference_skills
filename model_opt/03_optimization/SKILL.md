@@ -1,6 +1,6 @@
 ---
 name: NPU 优化实施
-description: 在昇腾 NPU 上实施模型调优。当用户要求优化性能或实施优化方案时触发。
+description: Phase 3 优化实施。在昇腾 NPU 上实施模型调优。当用户要求优化性能或实施优化方案时触发。执行前参见根 SKILL.md 全流程。
 ---
 
 # NPU 优化实施
