@@ -10,6 +10,7 @@ THRESHOLDS = {
         "moderate_host_bound_util": 50,     # % — below this = moderate host-bound
         "step_util_variance": 20,           # % — max-min util difference across steps
         "step_duration_spread": 2.0,        # max/min ratio for step duration outlier
+        "large_optimizable_space": 30,      # % — Free/Total above this = large optimizable space
     },
 
     "op_statistic": {
@@ -40,6 +41,7 @@ THRESHOLDS = {
         "comm_keywords": [                  # AI_CPU ops that are communication (excluded from fallback)
             "broadcast", "allgather", "alltoall", "allreduce", "hcom", "send", "recv", "reducescatter",
         ],
+        "short_kernel_dominant": 60,        # % — short kernel (<20us) ratio above this = dominant
     },
 
     "trace_view": {
@@ -62,6 +64,7 @@ THRESHOLDS = {
         "stack_max_frames": 6,              # max project frames shown in condensed call stack
         "disp_lat_sample_cap": 200000,      # max dispatch latency samples stored
         "compile_ts_cap": 500000,           # max compile timestamps stored
+        "dispatch_kernel_ratio": 50,        # % — dispatch/kernel-active above this = significant
     },
 
     "memory_record": {

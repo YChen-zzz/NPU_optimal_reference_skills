@@ -109,9 +109,11 @@ memory_record 高频抖动 + operator_memory 同尺寸反复分配 + trace_view 
 
 ### 小算子 > 50% + Block Dim=1 多 + 利用率低
 
+parse_step_trace Optimizable space > 30% + parse_kernel_details Short kernel ratio (<20us) > 60% + parse_trace_view Dispatch/kernel-active ratio > 50%
+
 → **Decode 场景碎片化**：per-token shape 太小导致并行度不足 + dispatch 占比高
-→ 分析模式: 异常定位(avg duration <20us 离群)
-→ 行动：fp16/bf16 启用融合算子减少 kernel 数,或图编译
+→ 分析模式: 异常定位(avg duration <20us 离群) + 横向关联(step_trace 可优化空间 + kernel_details short kernel + trace_view dispatch ratio 三方收敛)
+→ 行动：fp16/bf16 启用融合算子减少 kernel 数,或图编译;若 dispatch 未充分重叠(trace_view gap > 50us 占比高)则 flat forward 消除 Module.__call__ dispatch
 
 ### Communication Wait% > 80% + step_trace 通信占比高
 
@@ -156,7 +158,7 @@ operator_memory 的 Parallelism Trigger 分析显示:消除短命大 tensor(wast
 
 ## 多问题并存时的优先级
 
-按收益确定性和实施风险排序:
+按收益确定性和实施风险排序。每个优先级的"理论收益上限"由 parse 脚本输出量化：parse_step_trace 的 Optimizable space 是总上限，各脚本的开销占比是单项上限。方案排序应先看上限再看确定性。
 
 ```
 1. 显式同步（.item / .numpy / H2D / empty_cache）→ 消除（单点修复，收益确定，零风险）
@@ -164,7 +166,11 @@ operator_memory 的 Parallelism Trigger 分析显示:消除短命大 tensor(wast
 3. 图编译可行？→ 尝试（收益上限最高，但可能不兼容）
 4. allocator 同步（empty_tensor 占比高）→ 预分配（收益确定，改动较大）
 5. 框架 dispatch 开销 → flat forward（收益大，改动大）
+   量化: parse_trace_view Dispatch/kernel-active ratio + parse_step_trace Optimizable space
 6. 碎片算子融合 / 等价替换（融合算子、换 API）→ 逐个验证
+   量化: parse_kernel_details Short kernel ratio + fusible sequences
 7. 数据布局（Transpose 多）→ 预转置 + 改布局
+   量化: parse_op_statistic data movement overhead
 8. kernel 本身慢（Compute-Bound）→ 降精度 / 换算法 / 判定终局
+   量化: parse_step_trace Optimizable space < 10% 时此优先级为主
 ```

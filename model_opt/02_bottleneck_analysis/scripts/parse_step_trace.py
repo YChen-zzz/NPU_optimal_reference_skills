@@ -68,6 +68,13 @@ def parse(profiling_dir: str, rank=None) -> str:
             lines.append(f"  → Need kernel-level analysis to distinguish compute-bound vs memory-bound")
         lines.append("")
 
+        optimizable = free_total / grand_total * 100 if grand_total > 0 else 0
+        lines.append(f"  Theoretical limit (= Computing): {computing_total/1000:.1f} ms")
+        lines.append(f"  Optimizable space: {optimizable:.1f}% ((Total - Computing) / Total)")
+        if optimizable > threshold("step_trace", "large_optimizable_space", 30):
+            lines.append(f"  → 可优化空间大。非计算开销（dispatch/分配/同步）显著，方案排序应按此上限而非实现难度")
+        lines.append("")
+
     if len(step_data) > 1:
         lines.append("## Per-Step Breakdown")
         has_preparing = any(p > 0 for _, _, _, p, _ in step_data)

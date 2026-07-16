@@ -331,6 +331,21 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             L.append("  Top dispatch latency (nearest device kernel name for locating dispatch point):")
             for lat, dev_name in sorted(disp_top, key=lambda x: -x[0]):
                 L.append(f"    {lat/1000:>8.1f}us  ≈ {str(dev_name)[:40]}")
+        if dev_count > 0:
+            # Use p50 for estimation (avg is skewed by queue stall outliers)
+            est_per_op_us = (p50 / 1000) if disp_lat else (avg / 1000)
+            est_source = "p50" if disp_lat else "avg"
+            disp_total_us = dev_count * est_per_op_us
+            compute_active_us = sum(v[0] for v in compute_streams.values()) / 1000
+            L.append(f"  Estimated dispatch total: {disp_total_us/1000:.1f} ms (dev_count × {est_source}_latency)")
+            if compute_active_us > 0:
+                disp_kernel_ratio = disp_total_us / compute_active_us * 100
+                L.append(f"  Dispatch / kernel-active ratio: {disp_kernel_ratio:.1f}%")
+                if disp_kernel_ratio > threshold("trace_view", "dispatch_kernel_ratio", 50):
+                    L.append(f"  → Dispatch 开销估算 > kernel 活跃时间的 {threshold('trace_view', 'dispatch_kernel_ratio', 50)}%")
+                    L.append(f"    异步队列下两者可重叠，实际影响取决于 gap 分布:")
+                    L.append(f"    若 gap > 50us 占比高: dispatch 未充分重叠，减少 op 数量有收益")
+                    L.append(f"    若 gap < 10us 占比高: dispatch 已充分重叠，Free 来自串行依赖")
     else:
         L.append("  No HostToDevice flow found.")
     L.append("")

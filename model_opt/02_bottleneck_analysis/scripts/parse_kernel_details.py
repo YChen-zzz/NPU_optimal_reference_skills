@@ -60,6 +60,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     small_dur_total = 0.0
     small_type_count = defaultdict(int)
 
+    # Kernel duration distribution (5 buckets)
+    dur_buckets = {"<5us": 0, "5-20us": 0, "20-50us": 0, "50-200us": 0, ">200us": 0}
+
     # Block Dim distribution
     block_dim_buckets = {"1": 0, "2-8": 0, "9-28": 0, "29+": 0}
 
@@ -151,6 +154,14 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             small_count += 1
             small_dur_total += dur
             small_type_count[op_type] += 1
+
+        # Duration distribution
+        if dur > 0:
+            if dur < 5: dur_buckets["<5us"] += 1
+            elif dur < 20: dur_buckets["5-20us"] += 1
+            elif dur < 50: dur_buckets["20-50us"] += 1
+            elif dur < 200: dur_buckets["50-200us"] += 1
+            else: dur_buckets[">200us"] += 1
 
         # Block Dim
         if block_dim == 1:
@@ -259,8 +270,21 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             lines.append(f"  {name:<35} {dur:>8.1f} {otype:<15} {shapes_clean}")
         lines.append("")
 
-    # --- 4. Small Kernels ---
+    # --- 4. Kernel Duration Distribution ---
     sec_num = 4 if aicpu_kernels else 3
+    lines.append(f"## {sec_num}. Kernel Duration Distribution")
+    for bucket, count in dur_buckets.items():
+        pct = count / total_rows * 100 if total_rows > 0 else 0
+        bar = "█" * int(pct / 3)
+        lines.append(f"  {bucket:>8}: {count:>6} ({pct:>5.1f}%) {bar}")
+    short_ratio = (dur_buckets["<5us"] + dur_buckets["5-20us"]) / total_rows * 100 if total_rows > 0 else 0
+    lines.append(f"  Short kernel ratio (<20us): {short_ratio:.1f}%")
+    if short_ratio > threshold("kernel_details", "short_kernel_dominant", 60):
+        lines.append(f"  → 大部分 kernel 非常短。减少 op 数量的收益可能 > 优化单个 op")
+        lines.append(f"    Cross-validate: op_statistic § fragmentation signal, trace_view § dispatch latency")
+    lines.append("")
+
+    sec_num += 1
     lines.append(f"## {sec_num}. Small Kernels (duration < {small_threshold}us)")
     if small_count > 0:
         small_pct = small_count / total_rows * 100
