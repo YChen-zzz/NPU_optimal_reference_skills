@@ -280,7 +280,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     short_ratio = (dur_buckets["<5us"] + dur_buckets["5-20us"]) / total_rows * 100 if total_rows > 0 else 0
     lines.append(f"  Short kernel ratio (<20us): {short_ratio:.1f}%")
     if short_ratio > threshold("kernel_details", "short_kernel_dominant", 60):
-        lines.append(f"  → 大部分 kernel 非常短。减少 op 数量的收益可能 > 优化单个 op")
+        lines.append(f"  → Most kernels are very short. Reducing op count may yield more than optimizing individual ops")
         lines.append(f"    Cross-validate: op_statistic § fragmentation signal, trace_view § dispatch latency")
     lines.append("")
 

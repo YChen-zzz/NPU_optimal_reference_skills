@@ -12,7 +12,7 @@ Profiling 只能告诉你"哪个算子慢"，要动手优化必须先把它跨�
 | **Input Shapes** | `kernel_details.csv` / `operator_details.csv` 的 `Input Shapes` 列 | `record_shapes=True` | 区分同一算子类型的不同调用点（如 attention 的 QK^T vs FFN 的 up_proj） |
 | **AI Core 指标** | `kernel_details.csv` 的 `aic_*` / `aiv_*` 占比列 | `aic_metrics=PipeUtilization` | 判断算子瓶颈性质（compute / memory / 搬运），决定优化方向 |
 | **Accelerator Core** | `kernel_details.csv` 的 `Accelerator Core` 列；`data_preprocess.csv` | 基础采集即有；`data_preprocess.csv` 需 Level2 | 值为 AI CPU 的算子表示未落 AI Core，指向"换实现 / 改 dtype"的源码修改点 |
-| **下发时序** | `trace_view.json` 的 HostToDevice flow、`AscendCL@opCompile` 事件（`parse_trace_view.py`） | NPU 采集即有（不依赖 with_stack） | host→device 下发链与在线编译停顿（A 预热 / B 每步），定位 host-bound 的空隙成因；开 with_stack 时 `cpu_op` 还带 Call stack |
+| **下发时序** | `trace_view.json` 的 HostToDevice flow、`Node@launch` 的 `connection_id`、`async_npu(torch_to_npu)` flow、`AscendCL@opCompile` 事件（`parse_trace_view.py`） | NPU 采集即有（不依赖 with_stack） | host→device 下发链与在线编译停顿（A 预热 / B 每步）；`connection_id` 配对 `Node@launch`↔设备算子定位 host2device-bound 区段，`async_npu` flow 回连 `cpu_op` Call stack 定位源码（Call stack 需 with_stack） |
 
 ## 组合使用：定位漏斗
 
@@ -29,7 +29,7 @@ AI Core 指标 / Accelerator Core（怎么改）
 
 例：`op_statistic` 发现 Transpose 占 15% → `kernel_details --filter Transpose` 用 **Input Shapes** 确认是哪种 shape → `operator_details --filter Transpose` 用 **Call Stack** 定位到源码行 → **AI Core 指标** 判断是布局不匹配还是搬运开销 → 决定改法。
 
-> host-bound 场景走另一条路：`parse_trace_view.py` 的**下发时序**桥先区分空隙成因（下发延迟 / 在线编译 / 同步），再对 H2D 拷贝、反复分配等**不换算子**的操作用 Call stack 定位到源码，做预取 / 预分配 / buffer 复用。
+> host-bound 场景走另一条路：`parse_trace_view.py` 的**下发时序**桥先区分空隙成因（下发延迟 / 在线编译 / 同步），第 4 节 **Host2Device Bound Regions** 用 `connection_id` 配对 launch↔设备算子找出"设备空等 host"的时间区段，再经 `async_npu` flow 回连 `cpu_op` Call stack 定位到源码；对 H2D 拷贝、反复分配等**不换算子**的操作用 Call stack 做预取 / 预分配 / buffer 复用。
 
 ## 断桥时的降级路径
 

@@ -233,13 +233,14 @@ python parse_operator_memory.py /path/to/profiling --top-k 20
 1. **Device Timeline**：只列含 compute 任务的 stream（span/active/busy%/kernel 数），其余通信/同步/DMA 流折叠成一行；compute 任务间的 gap 分布
 2. **Device Stalls**：≥ 阈值的空隙**按(前→后 kernel 对)聚合**，给出出现次数、累计 gap、平均、最大，按累计降序——反复出现且累计大的才值得优化，避免被大量个例淹没
 3. **Dispatch Latency**：HostToDevice flow 配对得到的下发延迟分布（avg/max/p50/p90）+ 最慢的 top-N（附最近 device kernel 名）
-4. **Online-Compile Stalls**：`opCompile` 事件按时间分布判定 **A 类**（集中在预热期 → 采集时 `skip_first` 跳过即可）还是 **B 类**（贯穿全程的每步在线编译 → 执行模式问题，需关 jit_compile / 定 shape / 图编译，非采集参数可解）
-5. **Prefetch / Prealloc Candidates**：筛选 H2D 拷贝 / 反复分配类操作（`aten::to` / `copy_` / `empty` 等）——这些**无需换算子**即可用预取/预分配/buffer 复用优化，附精简到项目代码的 Call stack
+4. **Host2Device Bound Regions**：用 `Node@launch` 的 `connection_id` 与设备算子配对，算 `gap = device_start - launch_ts`；同 stream 上连续 ≥3 个 gap<50us 的算子视为一段 host2device-bound 区段（设备在等 host 下发、队列空转）。每段输出起止时间/算子链/设备空闲占比，并经 `async_npu(torch_to_npu)` flow 回连到 `cpu_op` 的 Call stack 定位源码。与 §3 互补：§3 是全局下发延迟统计，§4 是时间局部区段 + 源码定位
+5. **Suspect Signals**：host2device-bound 摘要（[SIGNAL] 概述区段数/host-bound 算子数/最差区段链，引向 §4 看详情）、在线编译分类（**A 类**集中预热期 → `skip_first` 跳过；**B 类**贯穿全程 → 关 jit_compile / 定 shape / 图编译）、预取/预分配候选（`aten::to`/`copy_`/`empty` 等**不换算子**的优化点，附精简 Call stack）、AI Core 降频、Python GC、频繁 stream 同步
 
 **Filter 模式**（`--filter NAME`）：给定算子名，输出匹配事件的 Call stack 和 Input Dims，直接定位源码位置。
 
 **何时使用**：
 - step_trace 判定 host-bound 后，用它定位 host 侧到底在忙什么（下发 / 编译 / 同步）
+- 定位 host2device bound 区段：第 4 节直接给出"哪段时间、哪段代码 host 喂不动设备"，配合 §3 全局下发延迟判断是局部还是系统性问题
 - 需要 host→device 下发链、区分首次编译（A 类，采集可解）与每步在线编译（B 类，执行模式问题）时
 - 找预取 / 预分配 / buffer 复用等**不换算子**的优化点，并用 Call stack 定位到源码
 - `operator_details.csv` 缺失但 trace_view 有 Call stack 时，作为源码定位的替代来源

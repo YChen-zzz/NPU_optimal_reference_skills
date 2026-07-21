@@ -80,7 +80,7 @@ Phase 2 的分析由两条线驱动,顺序执行:
 | 1 | `$S/parse_step_trace.py <dir>` | 判断瓶颈侧(host or device) | — |
 | 2 | `$S/parse_op_statistic.py <dir>` | 哪类算子最耗时 | — |
 | 3 | `$S/parse_kernel_details.py <dir>` | 硬件单元、小算子、流水 stall | — |
-| 4 | `$S/parse_trace_view.py <dir>` | host→device 下发链、device 空隙、在线编译 | [host_bound_patterns.md](references/host_bound_patterns.md) |
+| 4 | `$S/parse_trace_view.py <dir>` | host→device 下发链、device 空隙、host2device bound 区段、在线编译 | [host_bound_patterns.md](references/host_bound_patterns.md) |
 | 5 | `$S/parse_operator_details.py <dir>` | Call Stack 定位源码、host self duration | [profiling_to_source.md](references/profiling_to_source.md) |
 | 6 | `$S/parse_memory_record.py <dir>` | 内存峰值、碎片化、高频抖动 | [memory_profiling.md](references/memory_profiling.md) |
 | 7 | `$S/parse_operator_memory.py <dir>` | tensor 生命周期、重复同尺寸分配 | [memory_profiling.md](references/memory_profiling.md) |

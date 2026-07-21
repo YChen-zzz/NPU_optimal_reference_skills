@@ -72,7 +72,7 @@ def parse(profiling_dir: str, rank=None) -> str:
         lines.append(f"  Theoretical limit (= Computing): {computing_total/1000:.1f} ms")
         lines.append(f"  Optimizable space: {optimizable:.1f}% ((Total - Computing) / Total)")
         if optimizable > threshold("step_trace", "large_optimizable_space", 30):
-            lines.append(f"  → 可优化空间大。非计算开销（dispatch/分配/同步）显著，方案排序应按此上限而非实现难度")
+            lines.append(f"  → Large optimizable space. Non-compute overhead (dispatch/alloc/sync) is significant; rank candidates by this ceiling, not implementation difficulty")
         lines.append("")
 
     if len(step_data) > 1:

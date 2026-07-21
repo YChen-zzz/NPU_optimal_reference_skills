@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+import bisect
 import heapq
 import json
 import sys
@@ -115,6 +116,60 @@ def condense_stack(cs: str):
     return picked[:threshold("trace_view", "stack_max_frames", 6)]
 
 
+def _detect_h2d_runs(launch_by_cid, dev_by_cid, gap_thr_ns, min_run_len):
+    """Detect host2device-bound regions: consecutive launch→device pairs on the same
+    device stream whose gap (device_start - launch_start) is below threshold.
+
+    A small/negative gap means the device starts right when (or before, due to
+    host/device clock skew) the host launches it — the device queue was empty and
+    starving for host dispatch. A run of such ops = a host2device-bound region.
+
+    Returns a list of regions (each a list of pair dicts), sorted by device idle
+    time (span - dev_active) descending."""
+    pairs = []
+    for cid, (lts, ldur, item) in launch_by_cid.items():
+        dl = dev_by_cid.get(cid)
+        if not dl:
+            continue
+        # earliest device kernel start = the op's device execution start
+        dk = min(dl, key=lambda x: x[0])
+        pairs.append({
+            "cid": cid, "item": item, "lts": lts, "ldur": ldur,
+            "dts": dk[0], "ddur": dk[1], "stream": dk[3], "gap": dk[0] - lts,
+        })
+    by_stream = defaultdict(list)
+    for p in pairs:
+        by_stream[p["stream"]].append(p)
+    runs = []
+    for ps in by_stream.values():
+        ps.sort(key=lambda x: x["dts"])
+        cur = []
+        for p in ps:
+            if p["gap"] < gap_thr_ns:
+                cur.append(p)
+            else:
+                if len(cur) >= min_run_len:
+                    runs.append(cur)
+                cur = []
+        if len(cur) >= min_run_len:
+            runs.append(cur)
+    runs.sort(key=lambda r: ((r[-1]["dts"] + r[-1]["ddur"]) - r[0]["lts"]
+                             - sum(x["ddur"] for x in r)), reverse=True)
+    return runs
+
+
+def _chain_summary(run):
+    """Compact op-chain string for a run, deduping adjacent identical op types."""
+    chain = []
+    for p in run:
+        short = p["item"].split("_", 1)[0] if p["item"] else "?"
+        if not chain or chain[-1][0] != short:
+            chain.append([short, 1])
+        else:
+            chain[-1][1] += 1
+    return " → ".join(f"{n}×{c}" if c > 1 else n for n, c in chain)
+
+
 def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     gap_threshold_ns = int(gap_threshold_us * 1000)
 
@@ -150,6 +205,13 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     node_launch_count = 0
     sync_stream_dur = 0
 
+    # Host2Device-bound detection: launch↔device pairs via connection_id, plus the
+    # async_npu(torch_to_npu) flow and cpu_op timeline needed to resolve call stacks.
+    launch_by_cid = {}                    # cid -> (lts_ns, ldur_ns, item_id)
+    dev_by_cid = defaultdict(list)        # cid -> [(dts_ns, ddur_ns, name, stream, task_type)]
+    t2n_s = {}                            # async_npu flow id (== device_start_ns) -> torch host ts ns
+    cpuop_timeline = []                   # (start_ns, end_ns, name, callstack)
+
     for e in stream_json_array(csv_path):
         if not isinstance(e, dict):
             continue
@@ -171,6 +233,9 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             st[1] = ts if st[1] is None else min(st[1], ts)
             st[2] = end if st[2] is None else max(st[2], end)
             st[4] += 1
+            cid_dev = e["args"].get("connection_id")
+            if cid_dev is not None:
+                dev_by_cid[cid_dev].append((ts, dn, name, key, tt))
             if not compute:
                 noncompute_count += 1
             else:
@@ -222,12 +287,19 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
                     elif lat > disp_top[0][0]:
                         heapq.heapreplace(disp_top, entry)
 
+        elif cat == "async_npu" and ph == "s":
+            # torch_to_npu flow: id == device kernel start (ns); s.ts == torch host
+            # enqueue time. Used to link a device kernel back to its host cpu_op.
+            t2n_s[e.get("id")] = parse_ts_ns(e.get("ts"))
+
         elif cat == "cpu_op":
             if str(name).startswith("ProfilerStep"):
                 continue
             cs = e.get("args", {}).get("Call stack") if isinstance(e.get("args"), dict) else None
             if cs:
                 has_callstack = True
+                cts = parse_ts_ns(e.get("ts"))
+                cpuop_timeline.append((cts, cts + dur_ns(e.get("dur")), str(name), cs))
             low = str(name).lower()
             if any(k in low for k in PREFETCH_KEYS):
                 dn = dur_ns(e.get("dur"))
@@ -256,6 +328,11 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
 
         elif ph == "X" and str(name) == "Node@launch":
             node_launch_count += 1
+            lcid = e["args"].get("connection_id") if isinstance(e.get("args"), dict) else None
+            if lcid is not None and lcid not in launch_by_cid:
+                launch_by_cid[lcid] = (parse_ts_ns(e.get("ts")),
+                                       dur_ns(e.get("dur")),
+                                       e["args"].get("item_id", ""))
 
     if dev_count == 0 and not caps:
         return f"[trace_view] Empty or unrecognized file: {csv_path}"
@@ -342,20 +419,103 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
                 disp_kernel_ratio = disp_total_us / compute_active_us * 100
                 L.append(f"  Dispatch / kernel-active ratio: {disp_kernel_ratio:.1f}%")
                 if disp_kernel_ratio > threshold("trace_view", "dispatch_kernel_ratio", 50):
-                    L.append(f"  → Dispatch 开销估算 > kernel 活跃时间的 {threshold('trace_view', 'dispatch_kernel_ratio', 50)}%")
-                    L.append(f"    异步队列下两者可重叠，实际影响取决于 gap 分布:")
-                    L.append(f"    若 gap > 50us 占比高: dispatch 未充分重叠，减少 op 数量有收益")
-                    L.append(f"    若 gap < 10us 占比高: dispatch 已充分重叠，Free 来自串行依赖")
+                    L.append(f"  → Dispatch overhead est. > {threshold('trace_view', 'dispatch_kernel_ratio', 50)}% of kernel-active time")
+                    L.append(f"    Under async queue both overlap; actual impact depends on gap distribution:")
+                    L.append(f"    High ratio of gap > 50us: dispatch not fully overlapped — reducing op count helps")
+                    L.append(f"    High ratio of gap < 10us: dispatch fully overlapped — Free comes from serial dependency")
     else:
         L.append("  No HostToDevice flow found.")
     L.append("")
 
-    # --- 4. Suspect Signals (diagnostic: compile classification + prefetch candidates) ---
-    sec_num = 4
-    has_suspects = bool(acl_compile) or bool(host_prefetch)
+    # --- 4. Host2Device Bound Regions (temporal runs of dispatch-starved ops) ---
+    L.append("## 4. Host2Device Bound Regions")
+    runs = []
+    if launch_by_cid and dev_by_cid:
+        h2d_thr_ns = int(threshold("trace_view", "h2d_gap_threshold_us", 50) * 1000)
+        h2d_min_run = threshold("trace_view", "h2d_min_run_len", 3)
+        h2d_max_runs = threshold("trace_view", "h2d_max_runs", 15)
+        h2d_cs_per_run = threshold("trace_view", "h2d_callstack_per_run", 2)
+        runs = _detect_h2d_runs(launch_by_cid, dev_by_cid, h2d_thr_ns, h2d_min_run)
+        total_pairs = sum(len(r) for r in runs)
+        L.append(f"  Launch→device gap < {h2d_thr_ns/1000:.0f}us = device starts right at launch "
+                 f"(queue empty, starving for host dispatch).")
+        L.append(f"  Runs of >= {h2d_min_run} consecutive such ops on the same stream = host2device-bound region.")
+        L.append(f"  {total_pairs:,} host-bound ops in {len(runs)} region(s)"
+                 + (f" (showing top {min(len(runs), h2d_max_runs)} by device idle time)" if len(runs) > h2d_max_runs else "")
+                 + ".")
+        L.append("")
+        # callstack lookup index: cpu_op timeline sorted by start, plus async_npu link
+        cpuop_timeline.sort(key=lambda x: x[0])
+        cstarts = [c[0] for c in cpuop_timeline]
+        def resolve_cs(dts_ns):
+            torch_ts = t2n_s.get(dts_ns)
+            if torch_ts is None:
+                return []
+            i = bisect.bisect_right(cstarts, torch_ts) - 1
+            out = []
+            for j in range(max(0, i - 1), min(len(cpuop_timeline), i + 3)):
+                s, e_, nm, cs = cpuop_timeline[j]
+                if s <= torch_ts <= e_:
+                    out.append((nm, cs))
+            return out
+        shown = 0
+        for run in runs[:h2d_max_runs]:
+            span = (run[-1]["dts"] + run[-1]["ddur"]) - run[0]["lts"]
+            dev_active = sum(x["ddur"] for x in run)
+            idle_ns = span - dev_active
+            idle_pct = idle_ns / span * 100 if span > 0 else 0
+            t0_s = run[0]["lts"] / 1e9
+            L.append(f"  Region @~{t0_s:.3f}s  stream={run[0]['stream']}  ops={len(run)}  "
+                     f"span={format_duration_ms(span/1000)}  devActive={format_duration_ms(dev_active/1000)}  "
+                     f"idle={idle_pct:.0f}%")
+            chain_str = _chain_summary(run)
+            L.append(f"    chain: {chain_str[:120]}")
+            # call stacks for the tightest (smallest gap) distinct ops
+            seen_items = set()
+            cs_shown = 0
+            for p in sorted(run, key=lambda x: x["gap"]):
+                if p["item"] in seen_items or cs_shown >= h2d_cs_per_run:
+                    continue
+                cands = resolve_cs(p["dts"])
+                if not cands:
+                    continue
+                seen_items.add(p["item"])
+                cs_shown += 1
+                nm, cs = cands[0]
+                L.append(f"    [{p['item'][:40]}] gap={p['gap']/1000:.1f}us  ← {nm}")
+                for frame in condense_stack(cs):
+                    L.append(f"        {frame[:110]}")
+            L.append("")
+        if not runs:
+            L.append("  No sustained host2device-bound region found (pipeline dispatches run far ahead of device).")
+            L.append("")
+        if not cpuop_timeline:
+            L.append("  ⚠ No cpu_op Call stack in file — source mapping unavailable; re-collect with with_stack enabled.")
+            L.append("")
+    else:
+        L.append("  No Node@launch↔device pairs (connection_id) found — cannot assess host2device bound.")
+        L.append("")
+    L.append("")
+
+    # --- 5. Suspect Signals (diagnostic: compile classification + prefetch candidates) ---
+    sec_num = 5
+    has_suspects = bool(acl_compile) or bool(host_prefetch) or bool(runs)
     if has_suspects or (caps.get("cpu_op", 0) and has_callstack):
         L.append(f"## {sec_num}. Suspect Signals")
         L.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, cross-validate with other dimensions")
+        L.append("")
+
+    if runs:
+        total_h2d = sum(len(r) for r in runs)
+        worst = max(runs, key=lambda r: ((r[-1]["dts"] + r[-1]["ddur"]) - r[0]["lts"]
+                                         - sum(x["ddur"] for x in r)))
+        wspan = (worst[-1]["dts"] + worst[-1]["ddur"]) - worst[0]["lts"]
+        widle_pct = (wspan - sum(x["ddur"] for x in worst)) / wspan * 100 if wspan > 0 else 0
+        L.append(f"  [SIGNAL] Host2Device-bound: {len(runs)} region(s), {total_h2d:,} ops where device "
+                 f"starts right at launch (queue starving for host dispatch).")
+        L.append(f"    Worst region: {len(worst)} ops, device idle {widle_pct:.0f}%, "
+                 f"chain: {_chain_summary(worst)[:100]}")
+        L.append("    → See §4 for full chains + call stacks; cross-validate with operator_details / step_trace.")
         L.append("")
 
     if acl_compile:

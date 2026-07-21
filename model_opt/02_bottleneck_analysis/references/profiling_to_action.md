@@ -83,6 +83,14 @@ step_trace 利用率低 + trace_view compile B 类(贯穿全程) + kernel_detail
 → 分析模式: 横向关联(step_trace + trace_view + kernel_details 三方收敛)
 → 行动：关 jit_compile / 固定 shape / 图编译
 
+### Host-Bound + host2device bound 区段
+
+step_trace 利用率低 + trace_view 第 4 节检出 host2device-bound region（连续多个算子 device 启动紧贴 launch、队列空转）+ 无 compile B 类
+
+→ **host dispatch 喂不动设备**：host 侧串行下发跟不上 device 消费，设备空等
+→ 分析模式: 时序因果(trace_view launch↔device gap 游程) + 源码映射(async_npu flow 回连 cpu_op Call stack)
+→ 行动：碎片化小 op 链(OneHot/Fill/Cast)→融合/图编译消除逐算子 dispatch；host Python 逻辑重→下沉/预计算；交叉验证 operator_details 确认 host self duration
+
 ### 利用率高 + mte_ratio >> mac_ratio
 
 step_trace 利用率高 + kernel_details 硬件单元中 mte（搬运）远大于 mac（计算）

@@ -65,6 +65,10 @@ THRESHOLDS = {
         "disp_lat_sample_cap": 200000,      # max dispatch latency samples stored
         "compile_ts_cap": 500000,           # max compile timestamps stored
         "dispatch_kernel_ratio": 50,        # % — dispatch/kernel-active above this = significant
+        "h2d_gap_threshold_us": 50,         # us — device starts within this of launch = host-bound op
+        "h2d_min_run_len": 3,               # min consecutive host-bound ops to form a region
+        "h2d_max_runs": 15,                 # max regions reported (sorted by device idle time)
+        "h2d_callstack_per_run": 2,         # max distinct op call stacks shown per region
     },
 
     "memory_record": {
