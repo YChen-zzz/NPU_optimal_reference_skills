@@ -1,6 +1,6 @@
 ---
 name: npu-adaptation-preparation
-description: Phase 1 前期准备。模型 NPU 适配的前期准备工作，包括模型代码理解、CANN 环境搭建、测试数据准备、Profiling 采集脚本和精度验证脚本的构建。当用户需要：(1) 从零开始在 NPU 上跑通模型推理、(2) 搭建/诊断 CANN 环境、(3) 构建 profiling 采集与精度对比脚本、(4) 采集 L0 基线时触发。执行前参见根 SKILL.md 全流程。
+description: NPU 适配前期准备：代码理解、CANN 环境搭建、测试数据、profiling 采集与精度验证脚本构建。当用户需要把模型在 NPU 上跑通、搭建/诊断 CANN 环境、采集基线 profiling、或构建精度对比脚本时触发。
 ---
 
 # NPU 适配前期准备

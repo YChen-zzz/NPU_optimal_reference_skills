@@ -1,6 +1,6 @@
 ---
 name: npu-bottleneck-analysis
-description: Phase 2 瓶颈分析。分析昇腾 NPU 性能瓶颈——包含源码结构分析(主动发现结构性冗余)和 Profiling 数据分析(定位可见瓶颈)两条线。当用户要求分析性能、定位瓶颈、查看 profiling 数据、分析源码优化机会时触发。执行前参见根 SKILL.md 全流程。
+description: 瓶颈分析：profiling 数据分析 + 源码结构分析双线定位性能瓶颈。当用户需要分析性能瓶颈、查看 profiling 数据、定位慢的根因、或分析源码优化机会时触发。
 ---
 
 # NPU 瓶颈分析

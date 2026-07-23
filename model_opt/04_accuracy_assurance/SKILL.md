@@ -1,6 +1,6 @@
 ---
 name: npu-accuracy-assurance
-description: Phase 4 精度保证。确保 NPU 优化后的模型精度正确，包括基线管理、分层验证和精度调试。当用户关注精度验证、输出对比或精度问题定位时触发。执行前参见根 SKILL.md 全流程。
+description: 精度保证：基线管理、分层验证、精度调试。当用户需要验证优化后精度、对比 GPU/NPU 输出、对齐训练过程、或调试精度问题时触发。
 ---
 
 # NPU 精度保证
