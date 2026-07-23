@@ -1,6 +1,6 @@
 ---
-name: NPU 适配前期准备
-description: Phase 1 前期准备。模型 NPU 适配的前期准备工作，包括模型代码理解、CANN 环境搭建、测试数据准备、Profiling 脚本和精度验证脚本的构建。当用户需要从零开始在 NPU 上跑通模型推理时触发。执行前参见根 SKILL.md 全流程。
+name: npu-adaptation-preparation
+description: Phase 1 前期准备。模型 NPU 适配的前期准备工作，包括模型代码理解、CANN 环境搭建、测试数据准备、Profiling 采集脚本和精度验证脚本的构建。当用户需要：(1) 从零开始在 NPU 上跑通模型推理、(2) 搭建/诊断 CANN 环境、(3) 构建 profiling 采集与精度对比脚本、(4) 采集 L0 基线时触发。执行前参见根 SKILL.md 全流程。
 ---
 
 # NPU 适配前期准备
@@ -155,7 +155,7 @@ os.symlink(timestamp, latest_link)
 | 级别 | 内容 | 数据量 | 使用时机 |
 |------|------|--------|----------|
 | **L0** | 仅采集 NPU 活动，最小膨胀 | 小 | **性能判定基线**：项目最开始采集一次作为 baseline；每个优化阶段（profiling 分析 + 优化 + 精度确认的完整流程）结束后再采集一次，与 baseline/上一轮快速比对，判定本轮收益 |
-| **L1** | CPU + NPU + 算子详情 + 调用栈 + 内存 + AI Core 指标（覆盖全部 7 个解析脚本） | 大 | **优化分析主力**：每个优化阶段开始前采集一次，交给 Phase 2 瓶颈分析模块处理，定位优化点 |
+| **L1** | CPU + NPU + 算子详情 + 调用栈 + 内存 + AI Core 指标 + CANN 运行时 API 统计（覆盖全部 8 个解析脚本） | 大 | **优化分析主力**：每个优化阶段开始前采集一次，交给 Phase 2 瓶颈分析模块处理，定位优化点 |
 | **L2** | L1 基础上增加 CANN Runtime/GE 数据 + AI CPU 数据（`data_preprocess.csv`） | 更大 | **深度下探**：与 L1 用在同一阶段（阶段开始前），仅当 L1 信息不足以定位优化点时才启用，用于排查 Runtime 底层调度开销或算子 fallback 到 AI CPU |
 
 > **快速比对用 L0，优化分析用 L1，L1 不够再上 L2。** L0 因不注入 CPU 侧 barrier，Host/Device 比例更接近真实，适合作稳定的收益判定基线；L1/L2 数据量大、含 profiler 注入开销，仅在需要定位优化点时采集。

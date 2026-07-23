@@ -175,7 +175,7 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
 
     # --- Layer attribution (B4/C6) ---
     # Inclusive Host Total by first project call-stack frame — feeds Line A
-    # "穿透层级量化" gate (any layer >10% host time needs a candidate).
+    # layer attribution gate (any layer >10% host time needs a candidate).
     if layer_agg:
         lines.append("## Host Time by Call-Chain Layer (inclusive Host Total)")
         lines.append("  Per-layer inclusive host cost (Host Total, self+children). Line A gate: layer >10% of total → must have candidate.")

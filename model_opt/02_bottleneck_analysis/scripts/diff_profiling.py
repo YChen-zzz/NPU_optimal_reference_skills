@@ -48,7 +48,7 @@ def _get_memory_peak(ascend_dir):
 
 def _get_step_info(ascend_dir):
     """Return (step_count, computing_us, free_us, comm_us, has_operator_details)
-    for normalization + L0/L1 口径 guard + utilization diff."""
+    for normalization + L0/L1 level guard + utilization diff."""
     step_count = 0
     computing = free = comm = 0.0
     st = ascend_dir / "step_trace_time.csv"
@@ -167,19 +167,19 @@ def parse(dir_before: str, dir_after: str, rank=None, top_k: int = 20) -> str:
     lines.append(f"  Delta:  {delta_peak:+,.0f} MB")
     lines.append("")
 
-    # Normalization + L0/L1 口径 guard (D7)
+    # Normalization + L0/L1 level guard (D7)
     sb, comp_b, free_b, comm_b, odb = _get_step_info(ascend_before)
     sa, comp_a, free_a, comm_a, oda = _get_step_info(ascend_after)
     lines.append("## Comparability Guard")
     warn = False
     if odb != oda:
-        lines.append(f"  ⚠ L0/L1 口径不一致 (operator_details.csv: before={odb} after={oda}) — L1 含 profiler 注入开销，对比可能失真。建议同口径重采。")
+        lines.append(f"  WARNING L0/L1 level mismatch (operator_details.csv: before={odb} after={oda}) -- L1 includes profiler injection overhead, comparison may be distorted. Re-collect with same level.")
         warn = True
     if sb > 0 and sa > 0 and sb != sa:
-        lines.append(f"  ⚠ Step 数不同 (before={sb} after={sa}) — 总量不可直接比，下方已按 per-step 归一化。")
+        lines.append(f"  WARNING Different step count (before={sb} after={sa}) -- totals not directly comparable, per-step normalized below.")
         warn = True
     if not warn:
-        lines.append("  OK — 同口径、同 step 数。")
+        lines.append("  OK -- same level, same step count.")
     lines.append("")
 
     # Utilization diff (D1) — the key inference metric "did host-bound improve"
@@ -194,7 +194,7 @@ def parse(dir_before: str, dir_after: str, rank=None, top_k: int = 20) -> str:
         if comm_b + comm_a > 0:
             lines.append(f"  Comm/step:   {comm_b/norm/1000:.1f}ms → {comm_a/sa/1000:.1f}ms")
         if util_a <= util_b and (free_b - free_a) < 0:
-            lines.append("  ⚠ Utilization did not improve despite op time change — possible bottleneck shift; cross-validate with operator_details / trace_view diff.")
+            lines.append("  WARNING Utilization did not improve despite op time change -- possible bottleneck shift; cross-validate with operator_details / trace_view diff.")
         lines.append("")
 
     # Bottleneck type shift (D5)
@@ -236,6 +236,23 @@ def parse(dir_before: str, dir_after: str, rank=None, top_k: int = 20) -> str:
         if ka['aicpu_kernels'] < kb['aicpu_kernels']:
             lines.append("  → AI_CPU fallback reduced — ops moved to AI Core (replace optimization effective).")
         lines.append("")
+
+    # Suspect Signals (consistency with other parse scripts)
+    lines.append("## Suspect Signals")
+    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, cross-validate with other profiling dimensions")
+    sig = False
+    if sb > 0 and sa > 0:
+        util_b = comp_b / (comp_b + free_b) * 100 if (comp_b + free_b) > 0 else 0
+        util_a = comp_a / (comp_a + free_a) * 100 if (comp_a + free_a) > 0 else 0
+        if util_a <= util_b:
+            lines.append(f"  [SIGNAL] Utilization did not improve ({util_b:.1f}% -> {util_a:.1f}%) despite op time change -- possible bottleneck shift or pseudo-gain.")
+            sig = True
+        if odb != oda:
+            lines.append("  [SIGNAL] L0/L1 level mismatch -- comparison may be distorted, re-collect with same level.")
+            sig = True
+    if not sig:
+        lines.append("  None -- utilization improved, same level.")
+    lines.append("")
 
     return "\n".join(lines)
 

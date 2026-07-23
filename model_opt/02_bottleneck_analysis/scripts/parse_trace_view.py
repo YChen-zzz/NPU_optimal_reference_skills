@@ -201,7 +201,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     freq_values = []
     freq_max = 0
     # Resource utilization counters (A1): HBM bw, LLC hit rate/throughput,
-    # L2/MAC bw level, APP/HBM occupancy. 1.76M events; aggregate per name.
+    # L2/MAC bw level, APP/HBM occupancy. Aggregate per counter name.
     # counters[name] = [count, sum, min, max]
     counters = defaultdict(lambda: [0, 0.0, None, None])
     _COUNTER_CATS = ("Read(MB/s)", "Write(MB/s)", "Hit Rate(%)", "Throughput(MB/s)",
@@ -589,10 +589,10 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         L.append("  No resource counters found (HBM bw / LLC / utilization timeline unavailable).")
         L.append("")
 
-    # --- 5b. Stream Concurrency / Overlap (C3, 掩盖 dimension) ---
+    # --- 5b. Stream Concurrency / Overlap (C3, overlap dimension) ---
     # Quantify how many compute streams are busy simultaneously — the only
     # output for the "hide latency / overlap" optimization dimension.
-    L.append("## 5b. Stream Concurrency (overlap / 掩盖 dimension)")
+    L.append("## 5b. Stream Concurrency (overlap dimension)")
     if compute_intervals and len(compute_streams) > 1:
         # event sweep: at each transition, count active streams
         events = []
@@ -619,19 +619,19 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             one = concur.get(1, 0) + concur.get(0, 0)
             multi = sum(v for k, v in concur.items() if k >= 2)
             if multi / total_span < 0.2:
-                L.append(f"  → Only {multi/total_span*100:.0f}% of time has ≥2 streams busy concurrently — overlap under-exploited (掩盖 dimension opportunity).")
+                L.append(f"  → Only {multi/total_span*100:.0f}% of time has ≥2 streams busy concurrently — overlap under-exploited (opportunity to hide latency via multi-stream).")
             else:
                 L.append(f"  → {multi/total_span*100:.0f}% of time has ≥2 streams busy — overlap exploited.")
             L.append("  Cross-validate: gaps on one stream (§1 gap distribution) that overlap busy time on another = coverable bubbles.")
         L.append("")
     else:
-        L.append("  Single compute stream or no intervals — no multi-stream overlap to exploit (掩盖 via streams N/A).")
+        L.append("  Single compute stream or no intervals — no multi-stream overlap to exploit (stream-level latency-hiding N/A).")
         L.append("")
 
-    # --- 5c. Idle 成因分解 (C2 v2: time-aligned via host AscendCL@ events) ---
+    # --- 5c. Idle Cause Breakdown (C2 v2: time-aligned via host AscendCL@ events) ---
     # For each moment device is idle, attribute to what the host thread is doing
     # (mem-mgmt / sync / compile / launch / other-aclrt). Residual = Python/no-work.
-    L.append("## 5c. Idle Time 成因分解 (time-aligned: what host does while device idle)")
+    L.append("## 5c. Idle Time Cause Breakdown (time-aligned: what host does while device idle)")
     if compute_intervals:
         # Build unified event sweep: device-busy (+1/-1) + host-category enter/exit.
         # "device idle" = wall-clock time when NO compute stream is busy (true idle,

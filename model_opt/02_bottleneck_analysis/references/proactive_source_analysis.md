@@ -28,8 +28,8 @@
 推理调用链从外到内分为多层，每层都可能贡献 host 开销。不要只分析 `forward()`——**每一层**都要量化。
 
 1. 从入口到算子，列出调用链经过的所有层（如 `generate()` → `Module.__call__` → `forward()` → `F.linear` → `aten::matmul`）
-2. 用 `parse_operator_details.py` 的 host self duration 数据，量化每层的 host 开销占比
-3. 记录每层占比，供确认节点 A 的优先级覆盖门禁使用
+2. 用 `parse_operator_details.py` 的 **Host Time by Call-Chain Layer**（inclusive Host Total，按调用链首个项目帧聚合）量化每层 host 开销占比——注意用 Total（含子调用）而非 Self，因为 wrapper/dispatch 层 Self≈0 但 Total 大
+3. 记录每层占比，供确认节点 A 的优先级覆盖门禁使用（任何层 >10% total host time 须有候选）
 
 > 注意：此步骤只做**量化记录**，不在此处提出方案。某层占比高意味着该层有优化空间，具体怎么改是 Phase 3 的工作。
 

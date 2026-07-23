@@ -126,7 +126,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
                     "launch": "→ Launch overhead; reduce op count (fusion / graph compile).",
                 }.get(dom_cat, "")
                 if hint:
-                    lines.append(f"  [DEFINITE] {hint}")
+                    lines.append(f"  [SIGNAL] {hint}")
     else:
         lines.append("  None")
     lines.append("")

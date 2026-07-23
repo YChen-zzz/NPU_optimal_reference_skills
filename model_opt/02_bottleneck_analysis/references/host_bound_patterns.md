@@ -27,7 +27,7 @@
 每段区段输出：起止时间、算子链、设备空闲占比、以及经 `async_npu(torch_to_npu)` flow 回连到 `cpu_op` 的 Call stack。直接定位到"哪段代码、哪个 forward 在 host 侧喂不动设备"。
 
 典型成因与方向：
-- 碎片化的 host 计算（大量小 op 串行 dispatch，如 OneHot/Fill/Cast 链）→ 融合 / 图编译消除逐算子 dispatch
+- 碎片化的 host 计算（大量小 op 串行 dispatch，如逐元素/广播类小算子链）→ 融合 / 图编译消除逐算子 dispatch
 - host 侧 Python 逻辑重（条件分支、循环里构造 tensor）→ 把逻辑下沉或预计算
 - 与 §3 Dispatch Latency 互补：§3 看全局下发延迟是否健康，§4 看具体哪段代码 host-bound
 

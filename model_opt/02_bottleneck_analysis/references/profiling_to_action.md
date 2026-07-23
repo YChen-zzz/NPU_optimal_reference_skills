@@ -89,7 +89,7 @@ step_trace 利用率低 + trace_view 第 4 节检出 host2device-bound region（
 
 → **host dispatch 喂不动设备**：host 侧串行下发跟不上 device 消费，设备空等
 → 分析模式: 时序因果(trace_view launch↔device gap 游程) + 源码映射(async_npu flow 回连 cpu_op Call stack)
-→ 行动：碎片化小 op 链(OneHot/Fill/Cast)→融合/图编译消除逐算子 dispatch；host Python 逻辑重→下沉/预计算；交叉验证 operator_details 确认 host self duration
+→ 行动：碎片化小 op 链（逐元素/广播类）→融合/图编译消除逐算子 dispatch；host Python 逻辑重→下沉/预计算；交叉验证 operator_details 确认 host self duration
 
 ### 利用率高 + mte_ratio >> mac_ratio
 
@@ -166,19 +166,33 @@ operator_memory 的 Parallelism Trigger 分析显示:消除短命大 tensor(wast
 
 ## 多问题并存时的优先级
 
-按收益确定性和实施风险排序。每个优先级的"理论收益上限"由 parse 脚本输出量化：parse_step_trace 的 Optimizable space 是总上限，各脚本的开销占比是单项上限。方案排序应先看上限再看确定性。
+**排序原则**：主排序按**当前瓶颈类型下各方向的收益上限**降序（数据驱动，非固定全局序）；确定性/实施风险作为"本轮是否实施"的次级筛选，不进主排序。每个方向都挂 parse 脚本量化上限——`parse_step_trace` 的 Optimizable space 是总上限，各方向的开销占比是单项上限，按上限降序排候选。
+
+> 顺序随瓶颈类型变：Host-Bound 时 #1–#4 靠前；Compute-Bound 时 #8 自动到最前；Memory-Bound 时 #6 靠前。编号是方向清单，不是全局优先序。
 
 ```
-1. 显式同步（.item / .numpy / H2D / empty_cache）→ 消除（单点修复，收益确定，零风险）
-2. 在线编译→ 关 jit_compile / 固定 shape（根因级修复，收益大）
-3. 图编译可行？→ 尝试（收益上限最高，但可能不兼容）
-4. allocator 同步（empty_tensor 占比高）→ 预分配（收益确定，改动较大）
-5. 框架 dispatch 开销 → flat forward（收益大，改动大）
-   量化: parse_trace_view Dispatch/kernel-active ratio + parse_step_trace Optimizable space
-6. 碎片算子融合 / 等价替换（融合算子、换 API）→ 逐个验证
-   量化: parse_kernel_details Short kernel ratio + fusible sequences
-7. 数据布局（Transpose 多）→ 预转置 + 改布局
-   量化: parse_op_statistic data movement overhead
+1. 显式同步消除（.item/.numpy/H2D/empty_cache）→ 消除（单点修复，收益确定）
+   瓶颈: Host-Bound | 上限: operator_details §Host Time by Category 的 sync% + api_statistic sync 类别
+2. 在线编译/重编译 → 关 jit_compile / 固定 shape（根因级，收益大）
+   瓶颈: Host-Bound | 上限: trace_view §6 Suspect Signals 编译 B 类 + api_statistic compile 类别
+3. allocator/内存管理阻塞（empty_tensor 高频、aclrtFree/Unmap 阻塞）→ 预分配/复用
+   瓶颈: Host/Allocator-Bound | 上限: api_statistic memory-mgmt% + operator_memory 重复同尺寸分配 + trace_view §5c idle 成因 mem-mgmt
+4. 框架 dispatch 开销 → flat forward / 图编译
+   瓶颈: Host-Bound | 上限: operator_details §Host Time by Category dispatch% + trace_view §3 Dispatch/kernel-active ratio
+5. 碎片算子融合 / 等价替换 → 逐个验证
+   瓶颈: 通用 | 上限: kernel_details fusible sequences + Short kernel ratio
+6. 数据布局/format 转换（Transpose/Cast 多、非 ND 格式）→ 预转置 + 改布局
+   瓶颈: Memory-Bound | 上限: kernel_details 非 ND 格式占比 + op_statistic data movement overhead
+7. 掩盖/重叠（stream overlap / 通信-计算重叠 / 双 buffer）→ 流水并行
+   瓶颈: 通用 | 上限: trace_view §5b Stream Concurrency（≥2 流并发占比）+ step_trace Overlapped
 8. kernel 本身慢（Compute-Bound）→ 降精度 / 换算法 / 判定终局
-   量化: parse_step_trace Optimizable space < 10% 时此优先级为主
+   瓶颈: Compute-Bound | 上限: step_trace Optimizable space <10% 时此方向为主 + kernel_details 真 compute-bound 列表
 ```
+
+**图编译**是横切**手段**（解决 #2 在线编译 / #4 dispatch / #5 融合），不单列优先级；评估时归入对应方向的实施手段，"可能不兼容"作为风险标注，不压低主排序。
+
+**确定性/风险筛选**（次级，决定本轮是否实施）：
+- 单点修复、零风险（#1）→ 本轮直接做
+- 根因级、收益大但需验证（#2/#3/#4）→ 微基准先行
+- 高上限但高风险（图编译、dtype 变更）→ 子分支探索
+- 终局判定（#8 在 Optimizable<10% 时）→ 判定无优化空间即止

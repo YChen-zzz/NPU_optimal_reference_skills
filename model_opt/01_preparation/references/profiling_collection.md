@@ -76,7 +76,7 @@ with torch_npu.profiler.profile(
 
 ### 1.2 L1 — 优化分析主力（CPU + NPU，覆盖全部解析脚本）
 
-用途：每个优化阶段开始前采集一次，交给 Phase 2 瓶颈分析模块定位优化点。此档覆盖 `02_bottleneck_analysis` 全部 7 个解析脚本所需文件：`op_statistic.csv`、`step_trace_time.csv`、`kernel_details.csv`（含硬件单元占比列）、`memory_record.csv`、`operator_details.csv`（含 Call Stack）、`operator_memory.csv`。
+用途：每个优化阶段开始前采集一次，交给 Phase 2 瓶颈分析模块定位优化点。此档覆盖 `02_bottleneck_analysis` 全部 8 个解析脚本所需文件：`op_statistic.csv`、`step_trace_time.csv`、`kernel_details.csv`（含硬件单元占比列）、`memory_record.csv`、`operator_details.csv`（含 Call Stack）、`operator_memory.csv`、`api_statistic.csv`（CANN 运行时 API 统计）、`trace_view.json`。
 
 ```python
 import torch, torch_npu
