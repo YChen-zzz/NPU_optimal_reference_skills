@@ -33,6 +33,20 @@
 
 实施方式：每个模块实现 `prepack_inference_weights()`，顶层递归调用。预拼接权重作为普通属性（非 `nn.Parameter`），不参与 `state_dict`。
 
+### 加载时权重重映射
+
+prepack 把结果存成缓存属性、不动 `state_dict`，旧 checkpoint 直接能加载。但结构性融合（QKV 合并、layout 重排、算子拆并、dtype 转换）会改变权重的 key/形状，这时提供加载时 remap 函数，把旧 checkpoint 转成新结构。remap 代码与 modeling 同处，加载后必须与未优化模型做等价性验证（走 evidence_db）。
+
+```python
+def remap_state_dict(sd):
+    new = {k: v for k, v in sd.items() if not k.endswith((".q.weight", ".k.weight", ".v.weight"))}
+    for p in _qkv_prefixes(sd):
+        new[f"{p}.qkv.weight"] = torch.cat([sd[f"{p}.q.weight"], sd[f"{p}.k.weight"], sd[f"{p}.v.weight"]], 0)
+    return new
+
+model.load_state_dict(remap_state_dict(torch.load("old_ckpt.pt")))
+```
+
 ### 常量/标量设备缓存
 
 CPU 常量每次 `.to(device)` → 首次传输后缓存到 dict，后续直取。标量 `torch.tensor(eps, device=npu)` 同理。

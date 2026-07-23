@@ -72,7 +72,7 @@ description: Phase 3 优化实施。在昇腾 NPU 上实施模型调优。当用
 - 每次优化后重新 Profiling，确认瓶颈是否转移
 - GPU 最优实践在 NPU 可能反效果，必须实测验证
 - 保留原始实现供 fallback
-- 权重修改须保持 `state_dict` key 不变，确保 checkpoint 加载兼容
+- 权重修改须保持 checkpoint 可加载且数值等价：默认保持 state_dict key/结构不变；当结构性融合必须改变结构时，须提供与模型同处的确定性重映射函数并通过等价性验证（详见 [reuse_and_precompute.md](references/reuse_and_precompute.md)「加载时权重重映射」）
 - 优化尝试失败也要记录（what + why + 实际效果），避免重复踩坑
 
 ### 方向放弃标准
