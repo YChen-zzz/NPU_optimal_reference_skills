@@ -73,8 +73,8 @@ python parse_op_statistic.py /path/to/profiling --top-k 30
 2. **Per-Step Breakdown**：逐 step 列出各时间分量和利用率，用于观察是否有某个 step 异常偏离。
 
 3. **Preparing Analysis**（仅当 CSV 中 Preparing 列有值时输出）：对比 Preparing 与 Computing 的平均值。Preparing > Computing 说明 profiler 本身的 trace-writing 开销占主导（Level1 常见），需对比 Level0 采集结果区分真实 host gap 和 profiler 开销。
-
-4. **Suspect Signals**：
+4. **Optimization Ceilings**（Amdahl 式）：把本 step 时间拆成 compute floor / host-dispatch ceiling (Free) / communication ceiling，按上限排序候选优先级；并指向 operator_details（sync/alloc 子类）与 kernel_details（fusible 子类）做更细分解。喂饱确认节点 A 的"理论收益上限"。
+5. **Suspect Signals**：单步推理也输出（[INFO] 标注单步、variance/spread 信号在多步时才激活）；
    - Step 间利用率波动大（>20% 差距）：部分 step 效率显著低于其他，可能是 warmup 或数据依赖行为
    - Step 间耗时差距大（>2x）：可能有首步编译、动态 shape 或缓存效应
 
@@ -100,6 +100,7 @@ python parse_step_trace.py /path/to/profiling
    - AI_CORE：mac_ratio（计算）vs mte1/mte2_ratio（搬运）的平均值，判断 kernel 群整体是 compute-dominated 还是 memory-dominated
    - AI_VECTOR_CORE：vec_ratio vs mte2/mte3
    - Cube utilization 的平均和低利用率 kernel 数量
+   - **duration 加权**（[duration-weighted]）：少数重 kernel 主导时，算术平均掩盖 bimodal；加权值反映重 kernel 的真实占比，与算术值对比即可看出是否两极分化
 
 3. **小算子识别**（`--small-threshold` 控制，默认 5us）：duration 小于阈值的 kernel 数量、累计时间、Type 分布。大量小算子是碎片化信号，可能存在融合机会。
 
@@ -107,7 +108,8 @@ python parse_step_trace.py /path/to/profiling
 
 5. **Suspect Kernels**：duration 高但硬件计算单元占比（mac/vec）极低的 kernel 列表，覆盖 AI_CORE 和 AI_VECTOR_CORE。列出嫌疑，不做判定——可能是 shape 导致的必然结果，也可能有优化空间，由 agent 决定是否用 `--filter` 深入。
 
-6. **Wait Time 分布 + 高等待上下文**：wait time 的分桶统计，以及 wait 超过阈值的 kernel 及其前后 kernel 序列，用于识别流水断裂点的原因。
+6. **Wait Time 分布 + 高等待上下文**：wait time 的分桶统计，以及 wait 超过阈值的 kernel 及其**同流时间邻居**（按 Start Time 排序，非文件行序），用于识别流水断裂点的原因。
+7. **Suspect Signals**：低利用率高耗时 kernel（融合/换实现靶点）、**真 compute-bound**（高耗时高 mac_ratio，替换/量化/拆分靶点）、可融合小算子序列（**按流分组**检测，跨流不会误报为可融合）。
 
 **何时使用**：
 - 需要判断 kernel 群整体是 compute-bound 还是 memory-bound 时
@@ -137,6 +139,8 @@ python parse_kernel_details.py /path/to/profiling --filter Transpose Softmax --t
 
 **输出包含以下部分**：
 
+0. **Peak Reserved by Component**：按 Component 分段（WORKSPACE = 算子 workspace，可经 tiling/env 控制；APP/PTA = tensor 内存），区分可控部分。
+0a. **Active Memory（真实活集）**：Total Active 的 min/max。Active < Allocated = 可复用缓存空间；用 Active（非 Allocated）估 batch 上限。
 1. **Reserved Memory（allocator 池大小）**：min/max/range + 分桶时间线。
 2. **Allocated Memory（实际张量占用）**：仅 PTA 行有此数据，展示实际使用量的 min/max/range。
 3. **Pool Fragmentation（Reserved - Allocated）**：空闲池大小的变化趋势，碎片化程度。
@@ -168,6 +172,8 @@ python parse_memory_record.py /path/to/profiling --buckets 20 --top-k 10
 1. **默认模式**（轻量 host 开销概览）：
    - 按 host time 排序的算子列表（不重复 device 分析，那是 kernel_details 的事）
    - 纯 host 操作占比（框架 dispatch 开销量化）
+   - **Host Time by Category**：把 host Self 时间按类别分解（sync D→H / H2D-copy / alloc-metadata / dispatch / framework / other）——sync 与 dispatch 优化方向相反，分解后定方向
+   - **Host Time by Call-Chain Layer**：按调用链首个项目帧聚合 inclusive Host Total——喂饱 Line A「穿透层级量化」门禁（任何层 >10% host time 须有候选）
    - Suspect Signals：纯 host 操作占比过高、host/device ratio 极端的算子
 
 2. **Filter 模式**（`--filter`，核心用法）：
@@ -200,7 +206,7 @@ python parse_operator_details.py /path/to/profiling --filter aclnnMatmul aten::v
 
 1. **Top 分配 by Size**：最大的 tensor 分配，附带 lifetime 和分配时的全局内存状态。Lifetime 短的大 tensor 是 buffer 复用候选。
 2. **Op 聚合**：每种 op 的累计分配量、次数、平均 size 和平均 lifetime。快速看出谁是内存分配大户。
-3. **短命大 tensor**（size>100KB, lifetime<1ms）：分配后很快释放的大块——最强的 buffer 预分配信号。按 op 分组并列出典型 sizes。
+3. **短命大 tensor**（size>100KB, lifetime<1ms）：分配后很快释放的大块——最强的 buffer 预分配信号。按 op 分组并列出典型 sizes。判定用 **Active Duration**（真实被引用时长）而非 pool Duration——caching allocator 保留的 tensor pool Duration 长但 Active 短，用 Active 才不漏判复用候选。
 4. **Suspect Signals**：
    - 重复同尺寸分配：同一个 op 反复分配相同大小（预分配复用信号）
    - 短命大 tensor 累计量大：大量快速分配释放的内存抖动
@@ -287,9 +293,11 @@ python parse_communication.py /path/to/profiling --rank 0 --top-k 15
 **输出**：
 - 算子耗时 diff（按变化量排序）
 - 消失的算子和新增的算子
-- 内存峰值变化
+- 内存峰值变化（**优先用 Total Active**，Reserved 受 pool 保留干扰）
+- **Comparability Guard**：L0/L1 口径一致性检查（operator_details.csv 是否存在）+ step 数差异检测；不一致时警告并按 per-step 归一化
+- **Utilization / Free Diff**：before/after 利用率、Free、Computing、Comm 对比（per-step 归一化）——确认 host-bound 是否真改善、检测瓶颈转移
 
-**何时使用**：实施优化后对比效果——确认算子被消除/融合、总耗时下降。
+**何时使用**：实施优化后对比效果——确认算子被消除/融合、总耗时下降、利用率提升、host-bound 解除。注意同口径（L0 vs L0 或 L1 vs L1）同 step 数对比才有效。
 
 ```bash
 python diff_profiling.py /path/to/before /path/to/after --top-k 20

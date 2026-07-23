@@ -47,6 +47,10 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     aic_mte1_sum = 0.0
     aic_mte2_sum = 0.0
     aic_scalar_sum = 0.0
+    # duration-weighted (a few heavy kernels dominate; arithmetic mean masks bimodal)
+    aic_dur_sum = 0.0
+    aic_mac_wsum = 0.0
+    aic_mte_wsum = 0.0
 
     # Hardware unit aggregation (for AI_VECTOR_CORE)
     aiv_kernels = 0
@@ -54,6 +58,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     aiv_mte2_sum = 0.0
     aiv_mte3_sum = 0.0
     aiv_scalar_sum = 0.0
+    aiv_dur_sum = 0.0
+    aiv_vec_wsum = 0.0
+    aiv_mte_wsum = 0.0
 
     # Small kernel tracking
     small_count = 0
@@ -71,6 +78,8 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
 
     # Suspect kernels: high duration but low compute ratio (both core types)
     suspect_heap = []
+    # True compute-bound: high duration AND high compute ratio (replace/quant target)
+    compute_bound_heap = []
 
     # AI_CPU fallback tracking (exclude communication ops — they run on AI CPU by design)
     aicpu_kernels = []  # (dur, name, op_type, shapes) — non-comm only
@@ -97,6 +106,8 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         core = row.get("Accelerator Core", "?")
         block_dim = int(safe_float(row.get("Block Dim", 0)))
         cube_util = safe_float(row.get("cube_utilization(%)", 0))
+        start_time = safe_float(row.get("Start Time(us)", 0))
+        stream_id = row.get("Stream ID", "?").strip()
 
         core_stats[core]["count"] += 1
         core_stats[core]["dur_us"] += dur
@@ -112,6 +123,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             aic_mte1_sum += mte1_ratio
             aic_mte2_sum += mte2_ratio
             aic_scalar_sum += scalar_ratio
+            aic_dur_sum += dur
+            aic_mac_wsum += mac_ratio * dur
+            aic_mte_wsum += (mte1_ratio + mte2_ratio) * dur
             if cube_util > 0:
                 cube_util_values.append(cube_util)
             # Suspect: high duration but compute ratio low
@@ -122,6 +136,13 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
                     heapq.heappush(suspect_heap, entry)
                 elif dur > suspect_heap[0][0]:
                     heapq.heapreplace(suspect_heap, entry)
+            # True compute-bound: high duration AND high mac ratio (replace/quant target)
+            if dur > threshold("kernel_details", "suspect_min_duration_us", 10) and mac_ratio >= threshold("kernel_details", "compute_bound_mac_ratio", 0.5):
+                cb_entry = (dur, total_rows, name, core, mac_ratio, block_dim, row.get("Input Shapes", ""))
+                if len(compute_bound_heap) < top_k:
+                    heapq.heappush(compute_bound_heap, cb_entry)
+                elif dur > compute_bound_heap[0][0]:
+                    heapq.heapreplace(compute_bound_heap, cb_entry)
 
         elif core == "AI_VECTOR_CORE" and dur > 0:
             aiv_kernels += 1
@@ -133,6 +154,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             aiv_mte2_sum += aiv_mte2_ratio
             aiv_mte3_sum += aiv_mte3_ratio
             aiv_scalar_sum += aiv_scalar_ratio_val
+            aiv_dur_sum += dur
+            aiv_vec_wsum += vec_ratio * dur
+            aiv_mte_wsum += (aiv_mte2_ratio + aiv_mte3_ratio) * dur
             # Suspect: high duration but vec ratio low
             if dur > threshold("kernel_details", "suspect_min_duration_us", 10) and vec_ratio < threshold("kernel_details", "suspect_vec_ratio", 0.05):
                 entry = (dur, total_rows, name, core, vec_ratio,
@@ -183,31 +207,44 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         else:
             wait_buckets[">2000us"] += 1
 
-        # Store for context analysis
-        all_kernels.append({"name": name, "type": op_type, "dur": dur, "wait": wait})
+        # Store for context analysis (with start time + stream for temporal grouping)
+        all_kernels.append({"name": name, "type": op_type, "dur": dur, "wait": wait,
+                            "start": start_time, "stream": stream_id})
 
     if total_rows == 0:
         return f"[kernel_details] Empty file: {csv_path}"
 
-    # Detect fusible sequences: consecutive small kernels with high cumulative time
-    fusible_sequences = []  # (total_dur, count, start_idx, op_types)
-    i = 0
+    # Detect fusible sequences: consecutive small kernels (same stream, by start time)
+    # File row order ≠ temporal order when streams interleave; group by stream and
+    # sort by Start Time so "consecutive" means temporally adjacent on one stream.
+    fusible_sequences = []  # (total_dur, count, start_idx, op_types, stream)
     SMALL_THRESH = threshold("kernel_details", "fusible_small_us", 10.0)  # us
     MIN_LEN = threshold("kernel_details", "fusible_min_length", 5)
-    while i < len(all_kernels):
-        if all_kernels[i]["dur"] > 0 and all_kernels[i]["dur"] < SMALL_THRESH:
-            j = i
-            seq_total = 0
-            while j < len(all_kernels) and all_kernels[j]["dur"] > 0 and all_kernels[j]["dur"] < SMALL_THRESH:
-                seq_total += all_kernels[j]["dur"]
-                j += 1
-            seq_len = j - i
-            if seq_len >= MIN_LEN and seq_total > threshold("kernel_details", "fusible_min_total_us", 100):
-                types = [all_kernels[k]["type"] for k in range(i, j)]
-                fusible_sequences.append((seq_total, seq_len, i, types))
-            i = j
-        else:
-            i += 1
+
+    # per-stream index of original all_kernels positions, sorted by start time
+    stream_order = defaultdict(list)
+    for idx, k in enumerate(all_kernels):
+        stream_order[k["stream"]].append(idx)
+    for s in stream_order:
+        stream_order[s].sort(key=lambda i: all_kernels[i]["start"])
+
+    for s, idxs in stream_order.items():
+        i = 0
+        while i < len(idxs):
+            ki = all_kernels[idxs[i]]
+            if ki["dur"] > 0 and ki["dur"] < SMALL_THRESH:
+                j = i
+                seq_total = 0
+                while j < len(idxs) and all_kernels[idxs[j]]["dur"] > 0 and all_kernels[idxs[j]]["dur"] < SMALL_THRESH:
+                    seq_total += all_kernels[idxs[j]]["dur"]
+                    j += 1
+                seq_len = j - i
+                if seq_len >= MIN_LEN and seq_total > threshold("kernel_details", "fusible_min_total_us", 100):
+                    types = [all_kernels[idxs[k]]["type"] for k in range(i, j)]
+                    fusible_sequences.append((seq_total, seq_len, idxs[i], types, s))
+                i = j
+            else:
+                i += 1
 
     lines = []
     lines.append("# Kernel Details Analysis")
@@ -234,8 +271,15 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"    mte1 (load):    {aic_mte1_sum/aic_kernels:.3f}")
         lines.append(f"    mte2 (store):   {aic_mte2_sum/aic_kernels:.3f}")
         lines.append(f"    scalar:         {aic_scalar_sum/aic_kernels:.3f}")
-        avg_mac = aic_mac_sum / aic_kernels
-        avg_mte = (aic_mte1_sum + aic_mte2_sum) / aic_kernels
+        if aic_dur_sum > 0:
+            wmac = aic_mac_wsum / aic_dur_sum
+            wmte = aic_mte_wsum / aic_dur_sum
+            lines.append(f"    [duration-weighted] mac={wmac:.3f}  mte={wmte:.3f}  (heavy kernels dominate; compare with arithmetic above for bimodal)")
+            avg_mac = wmac
+            avg_mte = wmte
+        else:
+            avg_mac = aic_mac_sum / aic_kernels
+            avg_mte = (aic_mte1_sum + aic_mte2_sum) / aic_kernels
         if avg_mte > avg_mac * threshold("kernel_details", "hw_dominance_ratio", 1.5):
             lines.append(f"    → Memory-dominated: mte ({avg_mte:.3f}) >> mac ({avg_mac:.3f})")
         elif avg_mac > avg_mte * threshold("kernel_details", "hw_dominance_ratio", 1.5):
@@ -246,6 +290,8 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"    mte2 (load):    {aiv_mte2_sum/aiv_kernels:.3f}")
         lines.append(f"    mte3 (store):   {aiv_mte3_sum/aiv_kernels:.3f}")
         lines.append(f"    scalar:         {aiv_scalar_sum/aiv_kernels:.3f}")
+        if aiv_dur_sum > 0:
+            lines.append(f"    [duration-weighted] vec={aiv_vec_wsum/aiv_dur_sum:.3f}  mte={aiv_mte_wsum/aiv_dur_sum:.3f}")
     if cube_util_values:
         avg_cube = sum(cube_util_values) / len(cube_util_values)
         min_cube = min(cube_util_values)
@@ -337,6 +383,18 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
                 f"{compute_ratio:>7.3f} {move_ratio:>7.3f} {bdim:>5} {shapes_clean}")
         lines.append("")
 
+    # 7a-bis. True compute-bound kernels (high duration + high compute ratio)
+    cb_sorted = sorted(compute_bound_heap, key=lambda x: -x[0])
+    if cb_sorted:
+        lines.append("  [SIGNAL] True compute-bound (high duration + high compute ratio) — replace/quantize/split targets")
+        header = f"  {'Name':<42} {'Dur(us)':>8} {'mac':>6} {'BDim':>5} {'Shapes'}"
+        lines.append(header)
+        lines.append("  " + "-" * (len(header) - 2))
+        for dur, _, name, core, mac_ratio, bdim, shapes in cb_sorted:
+            shapes_clean = shapes.replace("\n", " ").replace(";", "|").replace('"', '')[:30]
+            lines.append(f"  {name:<42} {dur:>8.1f} {mac_ratio:>5.2f} {bdim:>5} {shapes_clean}")
+        lines.append("")
+
     # 7b. High-wait context
     high_wait_indices = [i for i, k in enumerate(all_kernels) if k["wait"] > wait_threshold]
     if high_wait_indices:
@@ -345,14 +403,19 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         top_waits = sorted(high_wait_indices, key=lambda i: -all_kernels[i]["wait"])[:min(top_k, 8)]
         for rank_idx, idx in enumerate(top_waits, 1):
             k = all_kernels[idx]
-            lines.append(f"  [{rank_idx}] #{idx} {k['name']}  wait={format_duration_ms(k['wait'])}")
+            lines.append(f"  [{rank_idx}] #{idx} {k['name']}  wait={format_duration_ms(k['wait'])}  stream={k['stream']}")
+            # temporal neighbors on the SAME stream (not file order)
+            s_order = stream_order.get(k["stream"], [])
+            pos = s_order.index(idx) if idx in s_order else -1
             context = 2
-            start = max(0, idx - context)
-            end = min(len(all_kernels), idx + context + 1)
-            for i in range(start, end):
-                ck = all_kernels[i]
-                marker = " <<<" if i == idx else ""
-                lines.append(f"      [{i}] {ck['type']:<20} dur={ck['dur']:>7.1f}us  wait={ck['wait']:>7.0f}us{marker}")
+            if pos >= 0:
+                lo = max(0, pos - context)
+                hi = min(len(s_order), pos + context + 1)
+                for p in range(lo, hi):
+                    ci = s_order[p]
+                    ck = all_kernels[ci]
+                    marker = " <<<" if ci == idx else ""
+                    lines.append(f"      [{ci}] {ck['type']:<20} dur={ck['dur']:>7.1f}us  wait={ck['wait']:>7.0f}us{marker}")
             lines.append("")
 
     # 7c. Fusible operator sequences
@@ -362,15 +425,15 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"  [SIGNAL] Fusible sequences: {len(fusible_sorted)} sequences of ≥{MIN_LEN} consecutive small kernels (<{SMALL_THRESH}us)")
         lines.append(f"    Total time in fusible sequences: {total_fusible/1000:.2f}ms ({total_fusible/total_dur_us*100:.1f}% of compute)")
         lines.append(f"    Top {min(top_k, 5)} by cumulative time:")
-        for total, count, start_idx, types in fusible_sorted[:5]:
+        for total, count, start_idx, types, s in fusible_sorted[:5]:
             from collections import Counter
             tc = Counter(types).most_common(3)
             type_str = ", ".join(f"{t}:{c}" for t, c in tc)
-            lines.append(f"      {total/1000:.2f}ms  {count} kernels  at #{start_idx}  types: {type_str}")
+            lines.append(f"      {total/1000:.2f}ms  {count} kernels  at #{start_idx}  stream={s}  types: {type_str}")
         lines.append("    → Cross-validate: check if these can be fused (equivalent_substitution layer 1) or batched.")
         lines.append("")
 
-    if not suspect_sorted and not high_wait_indices and not fusible_sequences:
+    if not suspect_sorted and not cb_sorted and not high_wait_indices and not fusible_sequences:
         lines.append("  None")
         lines.append("")
 

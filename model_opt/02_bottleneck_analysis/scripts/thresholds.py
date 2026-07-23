@@ -38,6 +38,7 @@ THRESHOLDS = {
         "fusible_small_us": 10.0,           # us — kernels below this = fusible candidate
         "fusible_min_length": 5,            # min consecutive small kernels for a sequence
         "fusible_min_total_us": 100,        # us — min cumulative duration for a sequence
+        "compute_bound_mac_ratio": 0.5,     # mac_ratio above this + high dur = true compute-bound (replace/quant target)
         "comm_keywords": [                  # AI_CPU ops that are communication (excluded from fallback)
             "broadcast", "allgather", "alltoall", "allreduce", "hcom", "send", "recv", "reducescatter",
         ],

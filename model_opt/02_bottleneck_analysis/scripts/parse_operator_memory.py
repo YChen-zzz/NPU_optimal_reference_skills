@@ -71,14 +71,27 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20,
         if size_kb > SHORT_LIVED_MIN_KB and 0 < duration_us < SHORT_LIVED_MAX_LIFE:
             short_lived_large.append((size_kb, duration_us, name))
 
-        # Classify large tensors for parallelism trigger
+        # Short-lived by ACTIVE duration (true referenced time, not pool lifetime).
+        # Caching allocator retains freed tensors in pool → Duration can be long
+        # while Active is short. Use Active to catch reuse candidates the pool
+        # Duration would mark "long-lived" and miss.
+        active_dur = safe_float(row.get("Active Duration(us)", 0))
+        if size_kb > SHORT_LIVED_MIN_KB and 0 < active_dur < SHORT_LIVED_MAX_LIFE:
+            # dedup against the Duration-based list by (size,name) is unnecessary;
+            # we track Active-based separately to surface cache-retained cases.
+            if 0 < duration_us >= SHORT_LIVED_MAX_LIFE:
+                short_lived_large.append((size_kb, active_dur, name))
+
+        # Classify large tensors for parallelism trigger (use Active Duration:
+        # a tensor cached-but-inactive is "waste" only if its active life is short)
         if size_kb > LARGE_KB and duration_us > 0:
             alloc_us = safe_float(row.get("Allocation Time(us)", 0))
             release_us = safe_float(row.get("Release Time(us)", 0))
-            if duration_us < SHORT_LIFE_US:
-                large_short.append((size_kb, duration_us, name, alloc_us, release_us))
+            life_us = safe_float(row.get("Active Duration(us)", 0)) or duration_us
+            if life_us < SHORT_LIFE_US:
+                large_short.append((size_kb, life_us, name, alloc_us, release_us))
             else:
-                large_long.append((size_kb, duration_us, name))
+                large_long.append((size_kb, life_us, name))
 
         if size_kb > SIZE_TRACK_MIN_KB:
             size_op_count[f"{name}|{size_kb:.0f}"] += 1

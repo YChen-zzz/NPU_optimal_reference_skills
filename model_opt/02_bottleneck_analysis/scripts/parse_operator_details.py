@@ -37,6 +37,28 @@ def _parse_call_stack(raw: str) -> list:
     return [f.replace("\n", " ").strip() for f in frames if f.replace("\n", "").strip()]
 
 
+def _host_category(name: str) -> str:
+    """Classify an op name into a host-time category (C1 decomposition).
+    sync vs dispatch vs alloc have opposite optimization directions, so
+    decomposing total host time by category drives optimization direction."""
+    n = str(name)
+    low = n.lower()
+    if "_local_scalar" in n or low.endswith("::item") or ".item" in low or "numpy" in low:
+        return "sync (D→H)"
+    if any(k in n for k in ("aclnn",)) and "Tiling" not in n:
+        return "dispatch (aclnn launch)"
+    if any(k in low for k in ("copy_", "_to_copy", "to_copy", "memcpy")) or n.endswith("::to"):
+        return "H2D/D2H copy"
+    if any(k in n for k in ("empty", "as_strided", "view", "reshape", "clone",
+                            "contiguous", "detach", "expand", "squeeze", "unsqueeze")):
+        return "alloc/metadata"
+    if n.startswith("c10d::") or "Profiler" in n or "broadcast_" in n:
+        return "framework/comm"
+    if "compile" in low or "opCompile" in n:
+        return "compile"
+    return "other"
+
+
 def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     """Default mode: host overhead overview — the unique info this file provides."""
     ascend_dir = find_ascend_profiler_output(profiling_dir, rank)
@@ -48,21 +70,42 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     total_rows = 0
     total_host_us = 0.0
     total_device_us = 0.0
+    total_host_total_us = 0.0  # inclusive host (self + children)
 
     # Aggregate by op name: host time focus
     op_agg = defaultdict(lambda: {"count": 0, "host_us": 0.0, "device_us": 0.0})
+
+    # Host time by category (C1): sync / alloc / H2D-copy / dispatch / framework / other
+    cat_agg = defaultdict(float)
+    # Layer attribution (B4/C6): inclusive Host Total by first project call-stack frame
+    layer_agg = defaultdict(lambda: {"host_total": 0.0, "count": 0})
+    _LIB_MARKERS = ("site-packages", "dist-packages", "/lib/python", "torch/nn/modules",
+                    "torch/_ops", "autograd/profiler", "torch_npu/profiler")
 
     for row in stream_csv(csv_path):
         total_rows += 1
         host_dur = safe_float(row.get("Host Self Duration(us)", 0))
         device_dur = safe_float(row.get("Device Self Duration(us)", 0))
+        host_total = safe_float(row.get("Host Total Duration(us)", 0))
         total_host_us += host_dur
         total_device_us += device_dur
+        total_host_total_us += host_total
 
         name = row.get("Name", "?")
         op_agg[name]["count"] += 1
         op_agg[name]["host_us"] += host_dur
         op_agg[name]["device_us"] += device_dur
+
+        # C1: host category by op name
+        cat_agg[_host_category(name)] += host_dur
+
+        # B4/C6: layer attribution via first project frame (inclusive Host Total)
+        frames = _parse_call_stack(row.get("Call Stack", ""))
+        proj_frame = next((f for f in frames if not any(m in f for m in _LIB_MARKERS)), None)
+        if proj_frame:
+            key = proj_frame[:90]
+            layer_agg[key]["host_total"] += host_total if host_total > 0 else host_dur
+            layer_agg[key]["count"] += 1
 
     if total_rows == 0:
         return f"[operator_details] Empty file: {csv_path}"
@@ -110,6 +153,33 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     for name, info in pure_host[:top_k]:
         lines.append(f"  {name:<35} {info['count']:>8} {info['host_us']/1000:>10.1f}")
     lines.append("")
+
+    # --- Host time by category (C1) ---
+    # sync vs dispatch vs alloc have opposite fixes; decompose to set direction.
+    if total_host_us > 0 and cat_agg:
+        lines.append("## Host Time by Category")
+        lines.append("  Decomposes total host Self time by op category — drives optimization direction.")
+        lines.append(f"  (total host self = {total_host_us/1000:.1f} ms)")
+        for cat, us in sorted(cat_agg.items(), key=lambda x: -x[1]):
+            pct = us / total_host_us * 100
+            lines.append(f"  {cat:<24} {us/1000:>9.1f} ms  ({pct:>5.1f}%)")
+        sync_us = sum(v for k, v in cat_agg.items() if k.startswith("sync"))
+        if sync_us / total_host_us > 0.2:
+            lines.append(f"  → sync (D→H) dominates ({sync_us/total_host_us*100:.0f}%): eliminate .item()/.numpy(), cache/delay syncs")
+        lines.append("")
+
+    # --- Layer attribution (B4/C6) ---
+    # Inclusive Host Total by first project call-stack frame — feeds Line A
+    # "穿透层级量化" gate (any layer >10% host time needs a candidate).
+    if layer_agg:
+        lines.append("## Host Time by Call-Chain Layer (inclusive Host Total)")
+        lines.append("  Per-layer inclusive host cost (Host Total, self+children). Line A gate: layer >10% of total → must have candidate.")
+        layers_sorted = sorted(layer_agg.items(), key=lambda x: -x[1]["host_total"])
+        denom = total_host_total_us if total_host_total_us > 0 else total_host_us
+        for frame, info in layers_sorted[:top_k]:
+            pct = info["host_total"] / denom * 100 if denom > 0 else 0
+            lines.append(f"  {pct:>5.1f}%  {info['host_total']/1000:>9.1f} ms  ({info['count']:>5} ops)  {frame}")
+        lines.append("")
 
     # Suspect signals
     lines.append("## Suspect Signals")

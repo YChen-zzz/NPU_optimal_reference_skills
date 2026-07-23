@@ -75,6 +75,21 @@ def parse(profiling_dir: str, rank=None) -> str:
             lines.append(f"  → Large optimizable space. Non-compute overhead (dispatch/alloc/sync) is significant; rank candidates by this ceiling, not implementation difficulty")
         lines.append("")
 
+        # Optimization ceilings (C4, Amdahl-style from this step's time split)
+        lines.append("## Optimization Ceilings (rank candidates by these)")
+        lines.append(f"  Compute floor (cannot reduce below): {computing_total/1000:.1f} ms ({computing_total/grand_total*100:.1f}%)")
+        lines.append(f"  Host/dispatch ceiling (recover Free): {free_total/1000:.1f} ms ({free_total/grand_total*100:.1f}%)")
+        if comm_total > 0:
+            lines.append(f"  Communication ceiling (overlap/eliminate): {comm_total/1000:.1f} ms ({comm_total/grand_total*100:.1f}%)")
+        if free_total >= comm_total and free_total > 0:
+            lines.append(f"  → Largest ceiling = host/dispatch (Free). Prioritize host-side fixes first.")
+        elif comm_total > 0:
+            lines.append(f"  → Largest ceiling = communication. Prioritize comm-compute overlap / comm reduction.")
+        lines.append("  Sub-category ceilings (finer breakdown):")
+        lines.append("    sync vs alloc vs dispatch → operator_details §Host Time by Category")
+        lines.append("    fusible small-op savings  → kernel_details §Fusible sequences")
+        lines.append("")
+
     if len(step_data) > 1:
         lines.append("## Per-Step Breakdown")
         has_preparing = any(p > 0 for _, _, _, p, _ in step_data)
@@ -105,36 +120,42 @@ def parse(profiling_dir: str, rank=None) -> str:
             lines.append("")
 
     # --- Suspect signals ---
-    if len(step_data) > 1:
-        step_utils = [c / (c + f) * 100 if (c + f) > 0 else 0 for c, f, _, _, _ in step_data]
-        step_totals = [c + f + cm for c, f, cm, _, _ in step_data]
-        avg_total = sum(step_totals) / len(step_totals)
+    # Always emit (single-step inference still gets signals); variance/spread
+    # are conditional on >1 step internally.
+    step_utils = [c / (c + f) * 100 if (c + f) > 0 else 0 for c, f, _, _, _ in step_data]
+    step_totals = [c + f + cm for c, f, cm, _, _ in step_data]
 
-        lines.append("## Suspect Signals")
-        lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
-        suspects_found = False
+    lines.append("## Suspect Signals")
+    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
+    suspects_found = False
 
-        # Variance between steps
-        if len(step_utils) > 1:
-            util_min = min(step_utils)
-            util_max = max(step_utils)
-            if util_max - util_min > threshold("step_trace", "step_util_variance", 20):
-                lines.append(f"  [SIGNAL] Step utilization variance: {util_min:.1f}% ~ {util_max:.1f}%")
-                lines.append(f"    Some steps significantly less efficient — cross-validate: check for warmup/compilation/dynamic shape")
-                suspects_found = True
+    # Single-step inference note (variance/spread signals need >1 step)
+    if len(step_data) == 1:
+        lines.append(f"  [INFO] Single-step inference profile ({len(step_data)} step) — step variance/spread signals inactive")
+        lines.append(f"    Use Overall utilization + optimizable space above; cross-validate host-bound cause via trace_view / operator_details")
+        suspects_found = True
 
-        # Step duration outliers
-        if len(step_totals) > 1:
-            total_min = min(step_totals)
-            total_max = max(step_totals)
-            if total_max > total_min * threshold("step_trace", "step_duration_spread", 2.0):
-                lines.append(f"  [SIGNAL] Step duration spread: {total_min/1000:.1f}ms ~ {total_max/1000:.1f}ms ({total_max/total_min:.1f}x)")
-                lines.append(f"    Large variation — cross-validate: check trace_view whether compile events cluster in outlier steps")
-                suspects_found = True
+    # Variance between steps
+    if len(step_utils) > 1:
+        util_min = min(step_utils)
+        util_max = max(step_utils)
+        if util_max - util_min > threshold("step_trace", "step_util_variance", 20):
+            lines.append(f"  [SIGNAL] Step utilization variance: {util_min:.1f}% ~ {util_max:.1f}%")
+            lines.append(f"    Some steps significantly less efficient — cross-validate: check for warmup/compilation/dynamic shape")
+            suspects_found = True
 
-        if not suspects_found:
-            lines.append("  None — steps appear consistent")
-        lines.append("")
+    # Step duration outliers
+    if len(step_totals) > 1:
+        total_min = min(step_totals)
+        total_max = max(step_totals)
+        if total_max > total_min * threshold("step_trace", "step_duration_spread", 2.0):
+            lines.append(f"  [SIGNAL] Step duration spread: {total_min/1000:.1f}ms ~ {total_max/1000:.1f}ms ({total_max/total_min:.1f}x)")
+            lines.append(f"    Large variation — cross-validate: check trace_view whether compile events cluster in outlier steps")
+            suspects_found = True
+
+    if not suspects_found:
+        lines.append("  None — steps appear consistent")
+    lines.append("")
 
     return "\n".join(lines)
 

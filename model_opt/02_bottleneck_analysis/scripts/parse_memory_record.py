@@ -34,22 +34,29 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
     # Collect records, separating by what data is available
     reserved_records = []  # (ts, reserved) - all rows
     allocated_records = []  # (ts, allocated, reserved) - PTA rows only
+    active_records = []     # (ts, active) - rows with Total Active
     component_counts = defaultdict(int)
+    component_peak = defaultdict(float)  # component -> max reserved (WORKSPACE vs tensor)
 
     for row in stream_csv(csv_path):
         ts = safe_float(row.get("Timestamp(us)", 0))
         reserved = safe_float(row.get("Total Reserved(MB)", 0))
         allocated = safe_float(row.get("Total Allocated(MB)", 0))
+        active = safe_float(row.get("Total Active(MB)", 0))
         component = row.get("Component", "").strip()
 
         if ts <= 0:
             continue
 
         component_counts[component] += 1
+        if reserved > component_peak[component]:
+            component_peak[component] = reserved
         reserved_records.append((ts, reserved))
 
         if allocated > 0:
             allocated_records.append((ts, allocated, reserved))
+        if active > 0:
+            active_records.append((ts, active))
 
     if not reserved_records:
         return f"[memory_record] No valid records in {csv_path}"
@@ -66,6 +73,27 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
     lines.append(f"Duration: {duration_s:.2f}s")
     lines.append(f"Components: {dict(component_counts)}")
     lines.append("")
+
+    # --- 0. By Component (WORKSPACE vs tensor memory) ---
+    # WORKSPACE is operator workspace (controllable via tiling/env), distinct
+    # from APP/PTA tensor memory. Segment so controllable part is visible.
+    if len(component_peak) > 1:
+        lines.append("## 0. Peak Reserved by Component")
+        lines.append("  WORKSPACE = operator workspace (controllable via tiling/env); APP/PTA(+GE) = tensor memory.")
+        for comp, peak in sorted(component_peak.items(), key=lambda x: -x[1]):
+            lines.append(f"  {comp:<12} peak={peak:>10,.0f} MB  ({component_counts[comp]:,} records)")
+        ws = component_peak.get("WORKSPACE", 0)
+        if ws > 0:
+            lines.append(f"  → WORKSPACE peak {ws:,.0f} MB is independently controllable (not tensor allocation).")
+        lines.append("")
+
+    # Active memory (true live set, distinct from Allocated which includes cache)
+    if active_records:
+        active_values = [a for _, a in active_records]
+        lines.append(f"## 0a. Active Memory (true live set)")
+        lines.append(f"  Records: {len(active_records):,}  |  Min: {min(active_values):,.0f} MB  |  Max: {max(active_values):,.0f} MB")
+        lines.append(f"  Active < Allocated = cached-but-reusable headroom. Use Active (not Allocated) for batch-size ceiling.")
+        lines.append("")
 
     # --- 1. Reserved memory (pool size) ---
     res_values = [r[1] for r in reserved_records]
