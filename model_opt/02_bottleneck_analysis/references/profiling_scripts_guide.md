@@ -13,6 +13,7 @@
 | 脚本 | 对应文件 | 典型大小 | 用途 |
 |------|---------|---------|------|
 | `parse_op_statistic.py` | `op_statistic.csv` | ~100 行 | 算子级耗时分布，定位瓶颈类型 |
+| `parse_api_statistic.py` | `api_statistic.csv` | ~百行 | CANN 运行时 API 耗时（tiling/launch/sync/memory-mgmt 分解），L1 产出 |
 | `parse_step_trace.py` | `step_trace_time.csv` | ~几行 | 设备利用率，判断瓶颈在 host 侧还是 device 侧 |
 | `parse_kernel_details.py` | `kernel_details.csv` | ~1K-100K 行 | Kernel 硬件单元利用、小算子、并行度、流水 stall |
 | `parse_memory_record.py` | `memory_record.csv` | ~30K-1M 行 | 内存时间线，峰值定位，OOM 预判 |
@@ -55,6 +56,22 @@ python <script>.py <profiling_dir> [--rank N] [--top-k K] [--output file.txt]
 
 ```bash
 python parse_op_statistic.py /path/to/profiling --top-k 30
+```
+
+---
+
+### parse_api_statistic.py
+
+**输入**：`api_statistic.csv`（CANN 运行时 API 调用耗时统计，L1 产出，L0 无）
+
+**定位**：host dispatch 开销的 **CANN API 层**视角。与 operator_details（op 名层）、trace_view（per-instance 时间线）互补——回答"host 时间里多少是 tiling、多少是 launch、多少是 memory-mgmt、多少是 sync"。
+
+**输出**：按 Level（acl/communication/node）汇总 + acl 层 Top API + **类别分解**（memory-mgmt / sync / tiling / launch）并标 dominant 类别。node launch count 与 trace_view Node@launch 对应。
+
+**何时使用**：host-bound 时下钻 host 开销的 CANN API 成因（如 aclrtFreePhysical/aclrtSynchronizeStream 占比）。
+
+```bash
+python parse_api_statistic.py /path/to/profiling --top-k 20
 ```
 
 ---

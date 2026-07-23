@@ -62,6 +62,41 @@ def _get_step_info(ascend_dir):
     return step_count, computing, free, comm, has_od
 
 
+def _get_host_overview(ascend_dir):
+    """Sum host Self time + pure-host share from operator_details.csv (L1 only)."""
+    csv_path = ascend_dir / "operator_details.csv"
+    if not csv_path.exists():
+        return None
+    total_host = 0.0
+    pure_host = 0.0
+    for row in stream_csv(csv_path):
+        h = safe_float(row.get("Host Self Duration(us)", 0))
+        d = safe_float(row.get("Device Self Duration(us)", 0))
+        total_host += h
+        if d == 0:
+            pure_host += h
+    return {"host_self_us": total_host, "pure_host_us": pure_host,
+            "pure_pct": pure_host / total_host * 100 if total_host > 0 else 0}
+
+
+def _get_kernel_overview(ascend_dir):
+    """Aggregate AI_CPU fallback count + AI_CORE mac ratio avg from kernel_details.csv."""
+    csv_path = ascend_dir / "kernel_details.csv"
+    if not csv_path.exists():
+        return None
+    aicpu = 0
+    mac_sum = 0.0
+    aic_n = 0
+    for row in stream_csv(csv_path):
+        core = row.get("Accelerator Core", "")
+        if "AI_CPU" in core:
+            aicpu += 1
+        elif core == "AI_CORE":
+            mac_sum += safe_float(row.get("aic_mac_ratio", 0))
+            aic_n += 1
+    return {"aicpu_kernels": aicpu, "aic_mac_avg": mac_sum / aic_n if aic_n > 0 else 0}
+
+
 def parse(dir_before: str, dir_after: str, rank=None, top_k: int = 20) -> str:
     ascend_before = find_ascend_profiler_output(dir_before, rank)
     ascend_after = find_ascend_profiler_output(dir_after, rank)
@@ -160,6 +195,46 @@ def parse(dir_before: str, dir_after: str, rank=None, top_k: int = 20) -> str:
             lines.append(f"  Comm/step:   {comm_b/norm/1000:.1f}ms → {comm_a/sa/1000:.1f}ms")
         if util_a <= util_b and (free_b - free_a) < 0:
             lines.append("  ⚠ Utilization did not improve despite op time change — possible bottleneck shift; cross-validate with operator_details / trace_view diff.")
+        lines.append("")
+
+    # Bottleneck type shift (D5)
+    def _bottleneck(util, comm_pct):
+        if util < 50:
+            return "Host-Bound"
+        if comm_pct > 20:
+            return "Comm-Bound"
+        return "Device-side (Compute/Memory)"
+    if sb > 0 and sa > 0:
+        comm_pct_b = comm_b / (comp_b + free_b + comm_b) * 100 if (comp_b + free_b + comm_b) > 0 else 0
+        comm_pct_a = comm_a / (comp_a + free_a + comm_a) * 100 if (comp_a + free_a + comm_a) > 0 else 0
+        bb = _bottleneck(util_b, comm_pct_b)
+        ba = _bottleneck(util_a if sa > 0 and (comp_a+free_a)>0 else 0, comm_pct_a)
+        lines.append("## Bottleneck Type Shift (D5)")
+        lines.append(f"  Before: {bb}  →  After: {ba}")
+        if bb != ba:
+            lines.append(f"  → Bottleneck shifted ({bb} → {ba}); next optimization round should target the new bottleneck.")
+        else:
+            lines.append(f"  → Bottleneck type unchanged ({ba}); continue current direction.")
+        lines.append("")
+
+    # Host overhead diff (D2) — L1 only
+    hb = _get_host_overview(ascend_before)
+    ha = _get_host_overview(ascend_after)
+    if hb and ha:
+        lines.append("## Host Overhead Diff (D2, L1)")
+        lines.append(f"  Host self/step: {hb['host_self_us']/max(sb,1)/1000:.1f}ms → {ha['host_self_us']/max(sa,1)/1000:.1f}ms")
+        lines.append(f"  Pure-host share: {hb['pure_pct']:.1f}% → {ha['pure_pct']:.1f}%")
+        lines.append("")
+
+    # Kernel hw diff (D4) — AI_CPU fallback count + AI_CORE mac avg
+    kb = _get_kernel_overview(ascend_before)
+    ka = _get_kernel_overview(ascend_after)
+    if kb and ka:
+        lines.append("## Kernel Hardware Diff (D4)")
+        lines.append(f"  AI_CPU fallback kernels: {kb['aicpu_kernels']} → {ka['aicpu_kernels']}")
+        lines.append(f"  AI_CORE mac_ratio avg: {kb['aic_mac_avg']:.3f} → {ka['aic_mac_avg']:.3f}")
+        if ka['aicpu_kernels'] < kb['aicpu_kernels']:
+            lines.append("  → AI_CPU fallback reduced — ops moved to AI Core (replace optimization effective).")
         lines.append("")
 
     return "\n".join(lines)

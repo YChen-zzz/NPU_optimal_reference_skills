@@ -48,6 +48,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20,
     PARALLELISM_RATIO = threshold("operator_memory", "parallelism_ratio", 0.8)
     large_short = []  # (size_kb, dur_us, name, alloc_us, release_us) — waste
     large_long = []   # (size_kb, dur_us, name) — essential
+    all_tensors = []  # (size_kb, name, alloc_us, release_us) for peak attribution (C10)
     peak_alloc_time = 0  # timestamp of peak allocation
 
     for row in stream_csv(csv_path):
@@ -60,6 +61,11 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20,
         max_alloc_at_alloc = max(max_alloc_at_alloc, alloc_total)
         if alloc_total >= max_alloc_at_alloc:
             peak_alloc_time = safe_float(row.get("Allocation Time(us)", 0))
+
+        # C10: collect all tensors for peak attribution (alive at peak moment)
+        if size_kb > 0:
+            all_tensors.append((size_kb, name, safe_float(row.get("Allocation Time(us)", 0)),
+                                 safe_float(row.get("Release Time(us)", 0))))
 
         if size_kb > 0:
             entry = (size_kb, total_rows, row)
@@ -240,6 +246,19 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20,
     else:
         lines.append("  No large short-lived tensors at peak. Memory is not a parallelism trigger.")
     lines.append("")
+
+    # --- Peak Attribution (C10): which tensors were alive at peak moment ---
+    if peak_alloc_time > 0 and all_tensors:
+        alive = [(sz, nm) for sz, nm, a, r in all_tensors
+                 if a <= peak_alloc_time <= r and sz > 0]
+        alive.sort(key=lambda x: -x[0])
+        alive_total_mb = sum(sz for sz, _ in alive) / 1024
+        lines.append("## Peak Attribution (tensors alive at peak moment)")
+        lines.append(f"  Peak at ts={peak_alloc_time:.0f}us | {len(alive):,} tensors alive | sum={alive_total_mb:,.0f}MB")
+        lines.append(f"  Top {min(top_k, len(alive))} by size (these drive the peak — reduce/reuse them first):")
+        for sz, nm in alive[:top_k]:
+            lines.append(f"    {format_size_mb(sz):>10}  {nm[:40]}")
+        lines.append("")
 
     return "\n".join(lines)
 

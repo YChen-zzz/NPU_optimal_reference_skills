@@ -51,6 +51,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     aic_dur_sum = 0.0
     aic_mac_wsum = 0.0
     aic_mte_wsum = 0.0
+    aic_fixpipe_sum = 0.0
+    aic_icache_values = []
+    format_counts = defaultdict(int)
 
     # Hardware unit aggregation (for AI_VECTOR_CORE)
     aiv_kernels = 0
@@ -61,6 +64,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     aiv_dur_sum = 0.0
     aiv_vec_wsum = 0.0
     aiv_mte_wsum = 0.0
+    aiv_icache_values = []
 
     # Small kernel tracking
     small_count = 0
@@ -108,9 +112,17 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         cube_util = safe_float(row.get("cube_utilization(%)", 0))
         start_time = safe_float(row.get("Start Time(us)", 0))
         stream_id = row.get("Stream ID", "?").strip()
+        input_formats = row.get("Input Formats", "").strip()
 
         core_stats[core]["count"] += 1
         core_stats[core]["dur_us"] += dur
+
+        # Format distribution (A2): non-ND formats = layout conversion cost
+        if input_formats:
+            for fmt in input_formats.replace(";", " ").split():
+                fmt = fmt.strip().strip('"')
+                if fmt:
+                    format_counts[fmt] += 1
 
         # Hardware unit ratios
         if core == "AI_CORE" and dur > 0:
@@ -119,10 +131,15 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             mte1_ratio = safe_float(row.get("aic_mte1_ratio", 0))
             mte2_ratio = safe_float(row.get("aic_mte2_ratio", 0))
             scalar_ratio = safe_float(row.get("aic_scalar_ratio", 0))
+            fixpipe_ratio = safe_float(row.get("aic_fixpipe_ratio", 0))
+            icache_miss = safe_float(row.get("aic_icache_miss_rate", 0))
             aic_mac_sum += mac_ratio
             aic_mte1_sum += mte1_ratio
             aic_mte2_sum += mte2_ratio
             aic_scalar_sum += scalar_ratio
+            aic_fixpipe_sum += fixpipe_ratio
+            if icache_miss > 0:
+                aic_icache_values.append(icache_miss)
             aic_dur_sum += dur
             aic_mac_wsum += mac_ratio * dur
             aic_mte_wsum += (mte1_ratio + mte2_ratio) * dur
@@ -150,10 +167,13 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             aiv_mte2_ratio = safe_float(row.get("aiv_mte2_ratio", 0))
             aiv_mte3_ratio = safe_float(row.get("aiv_mte3_ratio", 0))
             aiv_scalar_ratio_val = safe_float(row.get("aiv_scalar_ratio", 0))
+            aiv_icache_miss = safe_float(row.get("aiv_icache_miss_rate", 0))
             aiv_vec_sum += vec_ratio
             aiv_mte2_sum += aiv_mte2_ratio
             aiv_mte3_sum += aiv_mte3_ratio
             aiv_scalar_sum += aiv_scalar_ratio_val
+            if aiv_icache_miss > 0:
+                aiv_icache_values.append(aiv_icache_miss)
             aiv_dur_sum += dur
             aiv_vec_wsum += vec_ratio * dur
             aiv_mte_wsum += (aiv_mte2_ratio + aiv_mte3_ratio) * dur
@@ -271,6 +291,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"    mte1 (load):    {aic_mte1_sum/aic_kernels:.3f}")
         lines.append(f"    mte2 (store):   {aic_mte2_sum/aic_kernels:.3f}")
         lines.append(f"    scalar:         {aic_scalar_sum/aic_kernels:.3f}")
+        lines.append(f"    fixpipe:        {aic_fixpipe_sum/aic_kernels:.3f}")
+        if aic_icache_values:
+            lines.append(f"    icache miss:    avg={sum(aic_icache_values)/len(aic_icache_values):.3f}  max={max(aic_icache_values):.3f}")
         if aic_dur_sum > 0:
             wmac = aic_mac_wsum / aic_dur_sum
             wmte = aic_mte_wsum / aic_dur_sum
@@ -290,8 +313,17 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"    mte2 (load):    {aiv_mte2_sum/aiv_kernels:.3f}")
         lines.append(f"    mte3 (store):   {aiv_mte3_sum/aiv_kernels:.3f}")
         lines.append(f"    scalar:         {aiv_scalar_sum/aiv_kernels:.3f}")
+        if aiv_icache_values:
+            lines.append(f"    icache miss:    avg={sum(aiv_icache_values)/len(aiv_icache_values):.3f}  max={max(aiv_icache_values):.3f}")
         if aiv_dur_sum > 0:
             lines.append(f"    [duration-weighted] vec={aiv_vec_wsum/aiv_dur_sum:.3f}  mte={aiv_mte_wsum/aiv_dur_sum:.3f}")
+    # Format distribution (A2): non-ND formats indicate layout conversion cost
+    if format_counts:
+        total_fmt = sum(format_counts.values())
+        non_nd = sum(c for f, c in format_counts.items() if f != "ND" and f != "N/A")
+        lines.append(f"  Input Formats: {dict(sorted(format_counts.items(), key=lambda x: -x[1]))}")
+        if non_nd / total_fmt > 0.1 if total_fmt else False:
+            lines.append(f"  → {non_nd}/{total_fmt} ({non_nd/total_fmt*100:.0f}%) non-ND input formats — layout conversion cost; cross-validate op_statistic Transpose/Cast.")
     if cube_util_values:
         avg_cube = sum(cube_util_values) / len(cube_util_values)
         min_cube = min(cube_util_values)

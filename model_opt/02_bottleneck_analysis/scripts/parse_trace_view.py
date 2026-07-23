@@ -200,6 +200,12 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     # AI Core frequency, GC, stream sync, Node@launch tracking
     freq_values = []
     freq_max = 0
+    # Resource utilization counters (A1): HBM bw, LLC hit rate/throughput,
+    # L2/MAC bw level, APP/HBM occupancy. 1.76M events; aggregate per name.
+    # counters[name] = [count, sum, min, max]
+    counters = defaultdict(lambda: [0, 0.0, None, None])
+    _COUNTER_CATS = ("Read(MB/s)", "Write(MB/s)", "Hit Rate(%)", "Throughput(MB/s)",
+                     "L2 Buffer Bw Level", "Mata Bw Level", "KB", "value")
     gc_events = []                        # (dur_ns, name)
     sync_stream_count = 0
     node_launch_count = 0
@@ -211,6 +217,9 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     dev_by_cid = defaultdict(list)        # cid -> [(dts_ns, ddur_ns, name, stream, task_type)]
     t2n_s = {}                            # async_npu flow id (== device_start_ns) -> torch host ts ns
     cpuop_timeline = []                   # (start_ns, end_ns, name, callstack)
+    # C3: compute-stream intervals for overlap analysis (掩盖 dimension)
+    compute_intervals = []                # (start_ns, end_ns, stream_key)
+    _CI_CAP = 200000
 
     for e in stream_json_array(csv_path):
         if not isinstance(e, dict):
@@ -240,6 +249,8 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
                 noncompute_count += 1
             else:
                 st[3] += 1
+                if len(compute_intervals) < _CI_CAP:
+                    compute_intervals.append((ts, end, key))
                 last_device_name = name
                 if key in last_end:
                     prev_end, prev_name = last_end[key]
@@ -314,10 +325,26 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             if len(compile_ts) < threshold("trace_view", "compile_ts_cap", 500000):
                 compile_ts.append(parse_ts_ns(e.get("ts")))
 
-        elif ph == "C" and isinstance(e.get("args"), dict) and "MHz" in e["args"]:
-            mhz = e["args"]["MHz"]
-            freq_values.append(mhz)
-            freq_max = max(freq_max, mhz)
+        elif ph == "C" and isinstance(e.get("args"), dict):
+            args = e["args"]
+            if "MHz" in args:
+                mhz = args["MHz"]
+                freq_values.append(mhz)
+                freq_max = max(freq_max, mhz)
+            # aggregate all non-MHz counters by name
+            cname = str(e.get("name", ""))
+            for k in _COUNTER_CATS:
+                if k in args:
+                    try:
+                        v = float(args[k])
+                    except (ValueError, TypeError):
+                        continue
+                    st = counters[cname]
+                    st[0] += 1
+                    st[1] += v
+                    st[2] = v if st[2] is None else min(st[2], v)
+                    st[3] = v if st[3] is None else max(st[3], v)
+                    break
 
         elif cat == "GC" and ph == "X":
             gc_events.append((dur_ns(e.get("dur")), name))
@@ -497,8 +524,123 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         L.append("")
     L.append("")
 
-    # --- 5. Suspect Signals (diagnostic: compile classification + prefetch candidates) ---
-    sec_num = 5
+    # --- 5. Resource Utilization Timeline (counters, A1) ---
+    # HBM bandwidth / LLC hit rate / throughput / L2-MAC bw level / occupancy
+    # over time. The dynamic counterpart to kernel_details' static per-kernel
+    # ratios — distinguishes "memory-bound phase" vs "compute-bound phase".
+    L.append("## 5. Resource Utilization Timeline (counters)")
+    if counters:
+        # group counter names by category for readable output
+        def _cat(nm):
+            if "/Read" in nm or "read_bandwidth" in nm: return "HBM Read BW"
+            if "/Write" in nm or "write_bandwidth" in nm: return "HBM Write BW"
+            if "Hit Rate" in nm: return "LLC Hit Rate(%)"
+            if "Throughput" in nm: return "LLC Throughput(MB/s)"
+            if "L2 Buffer" in nm: return "L2 Buffer Bw Level"
+            if "Mata Bw" in nm: return "MAC Bw Level"
+            if "HBM" in nm or "DDR" in nm: return "Memory Occupancy(KB)"
+            return "utilization"
+        from collections import defaultdict as _dd
+        grouped = _dd(lambda: [0, 0.0, None, None])
+        for nm, st in counters.items():
+            c = _cat(nm)
+            g = grouped[c]
+            g[0] += st[0]; g[1] += st[1]
+            g[2] = st[2] if g[2] is None else min(g[2], st[2])
+            g[3] = st[3] if g[3] is None else max(g[3], st[3])
+        order = ["HBM Read BW", "HBM Write BW", "LLC Hit Rate(%)",
+                 "LLC Throughput(MB/s)", "L2 Buffer Bw Level", "MAC Bw Level",
+                 "Memory Occupancy(KB)", "utilization"]
+        for c in order:
+            if c not in grouped:
+                continue
+            cnt, s, mn, mx = grouped[c]
+            avg = s / cnt if cnt > 0 else 0
+            unit = "" if c in ("LLC Hit Rate(%)", "L2 Buffer Bw Level", "MAC Bw Level") else ""
+            L.append(f"  {c:<26} samples={cnt:>7,}  avg={avg:>10.1f}  min={mn:>10.1f}  max={mx:>10.1f}")
+        # saturation hints
+        hbm_read = grouped.get("HBM Read BW")
+        if hbm_read and hbm_read[3] > 0:
+            L.append(f"  → HBM Read BW peak={hbm_read[3]:.0f} MB/s — cross-validate against HBM peak BW to judge memory saturation.")
+        llc = grouped.get("LLC Hit Rate(%)")
+        if llc and llc[1] / (llc[0] or 1) < 0.5:
+            L.append(f"  → LLC Hit Rate avg low ({llc[1]/(llc[0] or 1)*100:.0f}%) — cache-unfriendly access pattern; cross-validate kernel_details mte dominance.")
+        L.append("")
+    else:
+        L.append("  No resource counters found (HBM bw / LLC / utilization timeline unavailable).")
+        L.append("")
+
+    # --- 5b. Stream Concurrency / Overlap (C3, 掩盖 dimension) ---
+    # Quantify how many compute streams are busy simultaneously — the only
+    # output for the "hide latency / overlap" optimization dimension.
+    L.append("## 5b. Stream Concurrency (overlap / 掩盖 dimension)")
+    if compute_intervals and len(compute_streams) > 1:
+        # event sweep: at each transition, count active streams
+        events = []
+        for s, e_, _ in compute_intervals:
+            events.append((s, 1))
+            events.append((e_, -1))
+        events.sort()
+        cur = 0
+        prev_t = events[0][0] if events else 0
+        concur = defaultdict(int)  # n_active_streams -> time_ns
+        for t, delta in events:
+            if t > prev_t and cur >= 0:
+                concur[cur] += (t - prev_t)
+            cur += delta
+            prev_t = t
+        total_span = sum(concur.values())
+        if total_span > 0:
+            L.append(f"  Compute streams: {len(compute_streams)} | intervals sampled: {len(compute_intervals):,}")
+            L.append(f"  Concurrent busy-streams distribution (time share):")
+            for n in sorted(concur.keys()):
+                if n <= 4 or n == max(concur.keys()):
+                    pct = concur[n] / total_span * 100
+                    L.append(f"    {n} streams busy: {concur[n]/1e9:>8.3f}s ({pct:>5.1f}%)")
+            one = concur.get(1, 0) + concur.get(0, 0)
+            multi = sum(v for k, v in concur.items() if k >= 2)
+            if multi / total_span < 0.2:
+                L.append(f"  → Only {multi/total_span*100:.0f}% of time has ≥2 streams busy concurrently — overlap under-exploited (掩盖 dimension opportunity).")
+            else:
+                L.append(f"  → {multi/total_span*100:.0f}% of time has ≥2 streams busy — overlap exploited.")
+            L.append("  Cross-validate: gaps on one stream (§1 gap distribution) that overlap busy time on another = coverable bubbles.")
+        L.append("")
+    else:
+        L.append("  Single compute stream or no intervals — no multi-stream overlap to exploit (掩盖 via streams N/A).")
+        L.append("")
+
+    # --- 5c. Idle/Free 成因分解 (C2) ---
+    # Attribute device idle time to causes: sync / compile / dispatch-starved(h2d) / other.
+    # Drives "why is device idle" — the question behind host-bound.
+    L.append("## 5c. Idle Time 成因分解 (why device idle)")
+    dev_span = sum((v[2] - v[1]) for v in compute_streams.values() if v[1] is not None and v[2] is not None)
+    dev_active = sum(v[0] for v in compute_streams.values())
+    dev_idle = dev_span - dev_active
+    if dev_idle > 0 and dev_span > 0:
+        # attribute (cap each at idle, rough)
+        sync_at = min(sync_stream_dur, dev_idle)
+        compile_at = min(acl_compile_dur, dev_idle)
+        h2d_idle = 0
+        for r in runs:
+            rspan = (r[-1]["dts"] + r[-1]["ddur"]) - r[0]["lts"]
+            ractive = sum(x["ddur"] for x in r)
+            h2d_idle += max(0, rspan - ractive)
+        h2d_at = min(h2d_idle, dev_idle)
+        other_at = max(0, dev_idle - sync_at - compile_at - h2d_at)
+        L.append(f"  Device idle: {format_duration_ms(dev_idle/1000)} / span {format_duration_ms(dev_span/1000)} ({dev_idle/dev_span*100:.0f}%)")
+        L.append(f"    sync-wait (SynchronizeStream):   {format_duration_ms(sync_at/1000)}")
+        L.append(f"    online-compile:                  {format_duration_ms(compile_at/1000)}")
+        L.append(f"    dispatch-starved (h2d regions):  {format_duration_ms(h2d_at/1000)}")
+        L.append(f"    other (allocator/python/etc):    {format_duration_ms(other_at/1000)}")
+        dom = max([("sync", sync_at), ("compile", compile_at), ("dispatch-starved", h2d_at), ("other", other_at)], key=lambda x: x[1])
+        L.append(f"  → dominant idle cause: {dom[0]} ({dom[1]/dev_idle*100:.0f}% of idle)")
+        if dom[0] == "other":
+            L.append("    'other' = host-side allocator/python overhead not captured as explicit sync/compile in trace_view;")
+            L.append("    cross-validate: api_statistic (aclrt memory-mgmt/sync) + operator_details (host category) for breakdown.")
+        L.append("")
+
+    # --- 6. Suspect Signals (diagnostic: compile classification + prefetch candidates) ---
+    sec_num = 6
     has_suspects = bool(acl_compile) or bool(host_prefetch) or bool(runs)
     if has_suspects or (caps.get("cpu_op", 0) and has_callstack):
         L.append(f"## {sec_num}. Suspect Signals")

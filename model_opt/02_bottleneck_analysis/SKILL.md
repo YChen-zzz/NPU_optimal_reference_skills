@@ -86,6 +86,7 @@ Phase 2 的分析由两条线驱动,顺序执行:
 | 7 | `$S/parse_operator_memory.py <dir>` | tensor 生命周期、重复同尺寸分配 | [memory_profiling.md](references/memory_profiling.md) |
 
 > 多卡场景额外运行 `$S/parse_communication.py <dir>` 分析通信开销（HCCL all-reduce/all-gather 等）。
+> host-bound 深挖时可选运行 `$S/parse_api_statistic.py <dir>`（L1 产出）下钻 CANN 运行时 API 开销（tiling/launch/sync/memory-mgmt）。
 
 **门禁规则**：
 - 每个脚本运行后，写一行发现摘要（如"step_trace: Host-Bound, 利用率 8%"）

@@ -57,6 +57,7 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
     by_type = defaultdict(lambda: {"count": 0, "elapse": 0, "transit": 0, "wait": 0, "sync": 0, "idle": 0})
     op_list = []  # (elapse, opname, op_type, time_info, bw_info, step)
     p2p_count = 0
+    p2p_list = []  # (elapse_ms, opname, transit_ms, wait_ms) — A11 P2P detail
 
     for step, step_data in comm_data.items():
         # Collective
@@ -82,8 +83,12 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
             total_sync += sync
             total_idle += idle
             op_list.append((elapse, opname, op_type, ti, info.get("Communication Bandwidth Info", {}), step))
-        # P2P
-        p2p_count += len(step_data.get("p2p", {}))
+        # P2P (A11): per-op timing, not just count
+        for opname, info in step_data.get("p2p", {}).items():
+            ti = info.get("Communication Time Info", {}) if isinstance(info, dict) else {}
+            p2p_list.append((safe_float(ti.get("Elapse Time(ms)", 0)), opname,
+                             safe_float(ti.get("Transit Time(ms)", 0)), safe_float(ti.get("Wait Time(ms)", 0))))
+            p2p_count += 1
 
     if not op_list:
         return f"[communication] No collective ops found in {comm_path}"
@@ -115,6 +120,19 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
         wait_pct = safe_float(ti.get("Wait Time(ms)", 0)) / elapse * 100 if elapse > 0 else 0
         L.append(f"  {opname[:50]:<50} {op_type:<12} {elapse:>10.2f} {wait_pct:>5.1f}%")
     L.append("")
+
+    # --- 3b. P2P ops detail (A11) ---
+    if p2p_list:
+        p2p_sorted = sorted(p2p_list, key=lambda x: -x[0])
+        p2p_total = sum(p[0] for p in p2p_list)
+        L.append(f"## 3b. P2P Ops (send/recv) — {len(p2p_list)} ops, total {p2p_total:.1f}ms")
+        L.append(f"  {'Op':<50} {'Elapse(ms)':>10} {'Transit(ms)':>12} {'Wait(ms)':>9}")
+        for elapse, opname, transit, wait in p2p_sorted[:top_k]:
+            L.append(f"  {opname[:50]:<50} {elapse:>10.2f} {transit:>12.2f} {wait:>9.2f}")
+        p2p_wait = sum(p[3] for p in p2p_list)
+        if p2p_total > 0 and p2p_wait / p2p_total > 0.5:
+            L.append(f"  → P2P wait-dominated ({p2p_wait/p2p_total*100:.0f}%) — cross-validate pipeline parallel bubbles.")
+        L.append("")
 
     # --- 4. Bandwidth Analysis (from matrix) ---
     if matrix_data:

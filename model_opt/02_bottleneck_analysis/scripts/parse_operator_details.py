@@ -73,7 +73,8 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     total_host_total_us = 0.0  # inclusive host (self + children)
 
     # Aggregate by op name: host time focus
-    op_agg = defaultdict(lambda: {"count": 0, "host_us": 0.0, "device_us": 0.0})
+    op_agg = defaultdict(lambda: {"count": 0, "host_us": 0.0, "device_us": 0.0,
+                                   "device_total": 0.0, "device_aicpu": 0.0})
 
     # Host time by category (C1): sync / alloc / H2D-copy / dispatch / framework / other
     cat_agg = defaultdict(float)
@@ -87,6 +88,8 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
         host_dur = safe_float(row.get("Host Self Duration(us)", 0))
         device_dur = safe_float(row.get("Device Self Duration(us)", 0))
         host_total = safe_float(row.get("Host Total Duration(us)", 0))
+        device_total = safe_float(row.get("Device Total Duration(us)", 0))
+        device_aicpu = safe_float(row.get("Device Self Duration With AICore(us)", 0))
         total_host_us += host_dur
         total_device_us += device_dur
         total_host_total_us += host_total
@@ -95,6 +98,8 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
         op_agg[name]["count"] += 1
         op_agg[name]["host_us"] += host_dur
         op_agg[name]["device_us"] += device_dur
+        op_agg[name]["device_total"] += device_total
+        op_agg[name]["device_aicpu"] += device_aicpu
 
         # C1: host category by op name
         cat_agg[_host_category(name)] += host_dur
@@ -199,6 +204,18 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
         for name, info in high_ratio[:5]:
             lines.append(f"    {name}: host={info['host_us']/1000:.1f}ms vs device={info['device_us']/1000:.1f}ms")
         lines.append(f"    Cross-validate: --filter <op> for Call Stack source location, trace_view for host dispatch backlog")
+        suspects_found = True
+
+    # A5: AI_CPU device attribution — ops whose device time is on AI_CPU (fallback)
+    aicpu_ops = [(name, info) for name, info in op_sorted_host
+                 if info["device_us"] > 0 and info["device_aicpu"] / info["device_us"] > 0.5
+                 and info["device_aicpu"] > 1000]
+    if aicpu_ops:
+        lines.append(f"  - [DEFINITE] Ops with device time on AI_CPU (>50% AICore-attributed, fallback):")
+        for name, info in aicpu_ops[:5]:
+            lines.append(f"    {name}: device={info['device_us']/1000:.1f}ms  aicpu={info['device_aicpu']/1000:.1f}ms "
+                         f"({info['device_aicpu']/info['device_us']*100:.0f}%)")
+        lines.append(f"    → Replace with AI Core impl / change dtype. Cross-validate kernel_details §3 AI CPU Fallback.")
         suspects_found = True
 
     if not suspects_found:
