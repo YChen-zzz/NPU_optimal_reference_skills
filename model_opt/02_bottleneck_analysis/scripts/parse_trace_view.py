@@ -217,9 +217,11 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     dev_by_cid = defaultdict(list)        # cid -> [(dts_ns, ddur_ns, name, stream, task_type)]
     t2n_s = {}                            # async_npu flow id (== device_start_ns) -> torch host ts ns
     cpuop_timeline = []                   # (start_ns, end_ns, name, callstack)
-    # C3: compute-stream intervals for overlap analysis (掩盖 dimension)
+    # C3: compute-stream intervals for overlap + idle attribution (C2 v2 needs full timeline)
     compute_intervals = []                # (start_ns, end_ns, stream_key)
-    _CI_CAP = 200000
+    _CI_CAP = 2000000
+    # C2 v2: host event intervals by category for idle attribution
+    host_ev_intervals = defaultdict(list)  # cat -> [(start_ns, end_ns)]
 
     for e in stream_json_array(csv_path):
         if not isinstance(e, dict):
@@ -324,6 +326,23 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             acl_compile_dur += dur_ns(e.get("dur"))
             if len(compile_ts) < threshold("trace_view", "compile_ts_cap", 500000):
                 compile_ts.append(parse_ts_ns(e.get("ts")))
+
+        # C2 v2: capture host AscendCL@/sync/launch event intervals for idle attribution
+        elif ph == "X" and (str(name).startswith("AscendCL@") or "Synchronize" in str(name) or str(name) == "Node@launch"):
+            nl = str(name).lower()
+            if "ompile" in nl:
+                hcat = "compile"
+            elif "freephysical" in nl or "unmapmem" in nl or "mallocphysical" in nl or "mapmem" in nl:
+                hcat = "mem-mgmt"
+            elif "synchronize" in nl:
+                hcat = "sync"
+            elif str(name) == "Node@launch":
+                hcat = "launch"
+            else:
+                hcat = "other-aclrt"
+            if len(host_ev_intervals[hcat]) < 200000:
+                host_ev_intervals[hcat].append((parse_ts_ns(e.get("ts")),
+                                                parse_ts_ns(e.get("ts")) + dur_ns(e.get("dur"))))
 
         elif ph == "C" and isinstance(e.get("args"), dict):
             args = e["args"]
@@ -609,35 +628,65 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         L.append("  Single compute stream or no intervals — no multi-stream overlap to exploit (掩盖 via streams N/A).")
         L.append("")
 
-    # --- 5c. Idle/Free 成因分解 (C2) ---
-    # Attribute device idle time to causes: sync / compile / dispatch-starved(h2d) / other.
-    # Drives "why is device idle" — the question behind host-bound.
-    L.append("## 5c. Idle Time 成因分解 (why device idle)")
-    dev_span = sum((v[2] - v[1]) for v in compute_streams.values() if v[1] is not None and v[2] is not None)
-    dev_active = sum(v[0] for v in compute_streams.values())
-    dev_idle = dev_span - dev_active
-    if dev_idle > 0 and dev_span > 0:
-        # attribute (cap each at idle, rough)
-        sync_at = min(sync_stream_dur, dev_idle)
-        compile_at = min(acl_compile_dur, dev_idle)
-        h2d_idle = 0
-        for r in runs:
-            rspan = (r[-1]["dts"] + r[-1]["ddur"]) - r[0]["lts"]
-            ractive = sum(x["ddur"] for x in r)
-            h2d_idle += max(0, rspan - ractive)
-        h2d_at = min(h2d_idle, dev_idle)
-        other_at = max(0, dev_idle - sync_at - compile_at - h2d_at)
-        L.append(f"  Device idle: {format_duration_ms(dev_idle/1000)} / span {format_duration_ms(dev_span/1000)} ({dev_idle/dev_span*100:.0f}%)")
-        L.append(f"    sync-wait (SynchronizeStream):   {format_duration_ms(sync_at/1000)}")
-        L.append(f"    online-compile:                  {format_duration_ms(compile_at/1000)}")
-        L.append(f"    dispatch-starved (h2d regions):  {format_duration_ms(h2d_at/1000)}")
-        L.append(f"    other (allocator/python/etc):    {format_duration_ms(other_at/1000)}")
-        dom = max([("sync", sync_at), ("compile", compile_at), ("dispatch-starved", h2d_at), ("other", other_at)], key=lambda x: x[1])
-        L.append(f"  → dominant idle cause: {dom[0]} ({dom[1]/dev_idle*100:.0f}% of idle)")
-        if dom[0] == "other":
-            L.append("    'other' = host-side allocator/python overhead not captured as explicit sync/compile in trace_view;")
-            L.append("    cross-validate: api_statistic (aclrt memory-mgmt/sync) + operator_details (host category) for breakdown.")
-        L.append("")
+    # --- 5c. Idle 成因分解 (C2 v2: time-aligned via host AscendCL@ events) ---
+    # For each moment device is idle, attribute to what the host thread is doing
+    # (mem-mgmt / sync / compile / launch / other-aclrt). Residual = Python/no-work.
+    L.append("## 5c. Idle Time 成因分解 (time-aligned: what host does while device idle)")
+    if compute_intervals:
+        # Build unified event sweep: device-busy (+1/-1) + host-category enter/exit.
+        # "device idle" = wall-clock time when NO compute stream is busy (true idle,
+        # not per-stream sum which double-counts overlap). Aligns with step_trace Free.
+        PRIO = {"sync": 0, "mem-mgmt": 1, "compile": 2, "launch": 3, "other-aclrt": 4}
+        events = []
+        for s, e_, _ in compute_intervals:
+            events.append((s, 0, +1, None))   # device busy start
+            events.append((e_, 0, -1, None))
+        for cat, ivs in host_ev_intervals.items():
+            for s, e_ in ivs:
+                if e_ > s:
+                    events.append((s, 1, 0, (cat, +1)))  # host cat enter
+                    events.append((e_, 1, 0, (cat, -1)))
+        events.sort(key=lambda x: (x[0], x[1], x[2] if x[2] is not None else 0))
+        dev_busy = 0
+        active_cats = {}
+        prev_t = events[0][0] if events else 0
+        span_start = prev_t
+        span_end = prev_t
+        idle_attr = defaultdict(int)
+        residual_idle = 0
+        for t, _, dev_delta, cat_evt in events:
+            if t > prev_t:
+                if dev_busy == 0:  # all streams idle during [prev_t, t]
+                    live = [c for c in active_cats if active_cats[c] > 0]
+                    if live:
+                        best = min(live, key=lambda c: PRIO.get(c, 99))
+                        idle_attr[best] += (t - prev_t)
+                    else:
+                        residual_idle += (t - prev_t)
+            if dev_delta:
+                dev_busy += dev_delta
+            if cat_evt:
+                cat, d = cat_evt
+                active_cats[cat] = active_cats.get(cat, 0) + d
+            prev_t = t
+            span_end = t
+        sweep_idle = sum(idle_attr.values()) + residual_idle
+        span_wc = span_end - span_start
+        if sweep_idle > 0:
+            L.append(f"  Device idle (all streams idle): {format_duration_ms(sweep_idle/1000)} / wall-clock span {format_duration_ms(span_wc/1000)} ({sweep_idle/span_wc*100:.0f}%)")
+            L.append("  Idle attributed to what host was doing at that moment:")
+            order = ["mem-mgmt", "sync", "compile", "launch", "other-aclrt"]
+            for c in order:
+                v = idle_attr.get(c, 0)
+                if v > 0:
+                    L.append(f"    {c:<12} {format_duration_ms(v/1000)} ({v/sweep_idle*100:>5.1f}%)")
+            L.append(f"    {'residual':<12} {format_duration_ms(residual_idle/1000)} ({residual_idle/sweep_idle*100:>5.1f}%)  (Python framework / no-work; cross-validate operator_details host category)")
+            all_attr = list(idle_attr.items()) + [("residual", residual_idle)]
+            dom = max(all_attr, key=lambda x: x[1])
+            L.append(f"  → dominant idle cause: {dom[0]} ({dom[1]/sweep_idle*100:.0f}% of idle)")
+            if dom[0] == "mem-mgmt":
+                L.append("    Host blocked in aclrt memory APIs (Free/Unmap/Malloc/Map) → device starves. Cross-validate api_statistic (memory-mgmt category).")
+            L.append("")
 
     # --- 6. Suspect Signals (diagnostic: compile classification + prefetch candidates) ---
     sec_num = 6
