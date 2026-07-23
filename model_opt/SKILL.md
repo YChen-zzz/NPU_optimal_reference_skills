@@ -69,78 +69,13 @@ Phase 5  工程化提交（git commit + 更新优化日志）
 > - **L2**：仅当某轮 L1 信息不足以定位优化点时，在同一 Phase 2 改采。
 > 级别定义与代码模板见 [01_preparation/SKILL.md](01_preparation/SKILL.md)「采集级别选择」及 [profiling_collection.md](01_preparation/references/profiling_collection.md) §1。
 
-## 用户确认节点
+## 执行协议（agent 程序约束）
 
-### 确认节点 A：优化方案审核（Phase 2 → Phase 3 之间）
+三个用户确认节点控制迭代流程，详细门禁（优先级覆盖表、Line A 完整性门禁、提交/继续审核）详见 [execution_protocol.md](references/execution_protocol.md)：
 
-Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方案并等待确认：
-
-1. 列出所有建议的优化点，每条包含：优化内容、预期收益、风险等级
-2. 每条方案必须标注"消除的开销类别"和"理论收益上限"（该类别占总时间的比例，引用 parse 脚本输出）
-3. 方案按"理论收益上限"降序排列，而非实现难度
-4. 使用 `ask_user_question` 询问用户：
-   - 方案整体是否合适
-   - 是否有需要跳过/不实施的优化点
-   - 是否有额外想尝试的方向
-5. 根据用户反馈调整优化清单，仅实施用户确认的条目
-
-#### 优先级覆盖门禁（展示候选前必须完成）
-
-[profiling_to_action.md](02_bottleneck_analysis/references/profiling_to_action.md) 的优先级列表定义了优化方向（按当前瓶颈类型下的收益上限降序，非固定全局序）。向用户展示候选前，必须为**每个优先级**填写下表。
-
-瓶颈类型由 `parse_step_trace.py` 的输出判定（Host-Bound / Compute-Bound / Memory-Bound / Allocator-Bound）。[profiling_to_action.md](02_bottleneck_analysis/references/profiling_to_action.md) 定义了每种瓶颈类型最相关的优先级。
-
-| # | 方向 | 瓶颈类型 | 状态 | 备注 |
-|---|------|---------|------|------|
-| 1 | 显式同步消除 | Host-Bound | □有候选 / □已排除(附依据) / □不适用 | |
-| 2 | 在线编译/重编译 | Host-Bound | □有候选 / □已排除(附依据) / □不适用 | |
-| 3 | allocator/内存管理阻塞 | Host/Allocator-Bound | □有候选 / □已排除(附依据) / □不适用 | |
-| 4 | 框架 dispatch | Host-Bound | □有候选 / □已排除(附依据) / □不适用 | |
-| 5 | 碎片算子融合 | 通用 | □有候选 / □已排除(附依据) / □不适用 | |
-| 6 | 数据布局/format | Memory-Bound | □有候选 / □已排除(附依据) / □不适用 | |
-| 7 | 掩盖/重叠 | 通用 | □有候选 / □已排除(附依据) / □不适用 | |
-| 8 | kernel 本身慢 | Compute-Bound | □有候选 / □已排除(附依据) / □不适用 | |
-
-> 图编译是横切手段（解 #2/#4/#5），不单列；"通用"型方向（#5/#7）对所有瓶颈类型都需评估。
-
-**门禁规则**：
-- 对于 `parse_step_trace.py` 判定的瓶颈类型，`profiling_to_action.md` 映射到该类型的优先级**不可**标记"不适用"——必须有候选或附 profiling 数据依据的"已排除"
-- "已排除"必须引用具体脚本输出作为依据（如"`parse_operator_memory.py` 显示无高频分配"），不可凭空判断
-
-#### Line A 产出完整性门禁
-
-Line A（源码分析）的产出必须包含以下两项分析结果，且其中的发现必须对应候选：
-
-1. **穿透层级量化**（见 [proactive_source_analysis.md](02_bottleneck_analysis/references/proactive_source_analysis.md)「穿透层级量化」）：
-   - 调用链中任何层贡献 > 10% 的 total host time → 该层**必须**有对应候选
-
-2. **热路径操作审计表**（见 [proactive_source_analysis.md](02_bottleneck_analysis/references/proactive_source_analysis.md)「热路径操作审计表」）：
-   - 审计表中任何维度标记为"是"或"否(不随输入变)"的操作 → 该操作**必须**有对应候选
-   - 用 `parse_op_statistic.py` / `parse_operator_memory.py` 数据量化影响范围，占比 <1% 的可跳过
-
-### 确认节点 B：提交前审核（Phase 4 → Phase 5 之间）
-
-本批优化的精度验证和 profiling 确认均通过后、git commit 前，**必须**向用户展示本批总结并等待确认：
-
-1. 总结本批实施的所有优化点及实际效果（性能数据 + 精度数据）
-2. 列出未采纳的方案及原因
-3. 确认 evidence_db 案例已按 [schema](06_evidence_db/schema.md) 记录到项目工作目录的 `evidence_db/` 下（展示案例文件路径）
-4. 使用 `ask_user_question` 询问用户：
-   - 是否确认提交本批优化
-   - 是否需要回退某些改动
-5. 用户确认后才执行 git commit
-
-> 案例未记录 = 不允许提交。与"精度未通过 = 不允许提交"同等约束力。
-
-### 确认节点 C：继续优化确认（Phase 5 之后）
-
-git commit 完成后，**必须**向用户展示本轮总结并询问是否继续：
-
-1. 展示本轮优化总结（性能提升 + 精度状态）
-2. 展示当前剩余瓶颈（最新 profiling 数据）
-3. 使用 `ask_user_question` 询问用户：是否继续下一轮优化？
-4. 用户确认继续 → 回到 Phase 2 开启下一轮（重新采集 L1）
-5. 用户确认停止 → 结束
+- **★A 方案审核**（Phase 2→3）：展示候选清单（按收益上限降序），须完成优先级覆盖门禁 + Line A 完整性门禁。仅实施用户确认的条目。
+- **★B 提交审核**（Phase 4→5）：展示本批总结（性能+精度），evidence_db 已记录才允许 git commit。
+- **★C 继续确认**（Phase 5 后）：展示本轮总结 + 剩余瓶颈，询问是否开启下一轮。
 
 ## 子技能索引
 

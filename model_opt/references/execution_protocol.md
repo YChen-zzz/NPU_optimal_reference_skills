@@ -1,0 +1,76 @@
+# 执行协议（agent 程序约束）
+
+> 本文件是迭代流程中三个用户确认节点的详细门禁。方法论（分析思路 + 方案设计思路）在 [SKILL.md](../SKILL.md) 和 [profiling_to_action.md](../02_bottleneck_analysis/references/profiling_to_action.md)，本文件只管"执行时必须完成的程序约束"。
+
+## 确认节点 A：优化方案审核（Phase 2 → Phase 3 之间）
+
+Phase 2 分析完成后、进入实施前，**必须**向用户展示优化方案并等待确认：
+
+1. 列出所有建议的优化点，每条包含：优化内容、预期收益、风险等级
+2. 每条方案必须标注"消除的开销类别"和"理论收益上限"（该类别占总时间的比例，引用 parse 脚本输出）
+3. 方案按"理论收益上限"降序排列，而非实现难度
+4. 使用 `ask_user_question` 询问用户：
+   - 方案整体是否合适
+   - 是否有需要跳过/不实施的优化点
+   - 是否有额外想尝试的方向
+5. 根据用户反馈调整优化清单，仅实施用户确认的条目
+
+### 优先级覆盖门禁（展示候选前必须完成）
+
+[profiling_to_action.md](../02_bottleneck_analysis/references/profiling_to_action.md) 的**归因层**定义了 10 类浪费（优化方向），按当前瓶颈类型下的收益上限降序排（非固定全局序）。向用户展示候选前，必须为**每类浪费**填写下表。
+
+瓶颈类型由 `parse_step_trace.py` 的输出判定（Host-Bound / Compute-Bound / Memory-Bound / Allocator-Bound）。归因层每类浪费映射到最相关的瓶颈类型。
+
+| 浪费类别 | 瓶颈类型 | 状态 | 备注 |
+|---|---------|------|------|
+| 显式同步 | Host-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| dispatch 调度 | Host-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| 内存管理阻塞 | Host/Allocator-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| 在线编译/重编译 | Host-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| 内存带宽受限 | Memory-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| compute 饱和 | Compute-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| 布局/格式转换 | Memory-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| 通信同步等待 | Comm-Bound | □有候选 / □已排除(附依据) / □不适用 | |
+| 小算子碎片 | 通用 | □有候选 / □已排除(附依据) / □不适用 | |
+| 延迟未掩盖 | 通用 | □有候选 / □已排除(附依据) / □不适用 | |
+
+> 图编译是横切手段（解 dispatch/在线编译/碎片），归手段层不单列；"通用"类（碎片/延迟未掩盖）对所有瓶颈类型都需评估。
+
+**门禁规则**：
+- 对于 `parse_step_trace.py` 判定的瓶颈类型，归因层映射到该类型的浪费类别**不可**标记"不适用"——必须有候选或附 profiling 数据依据的"已排除"
+- "已排除"必须引用具体脚本输出作为依据（如"`parse_operator_memory.py` 显示无高频分配"），不可凭空判断
+
+### Line A 产出完整性门禁
+
+Line A（源码分析）的产出必须包含以下两项分析结果，且其中的发现必须对应候选：
+
+1. **穿透层级量化**（见 [proactive_source_analysis.md](../02_bottleneck_analysis/references/proactive_source_analysis.md)「穿透层级量化」）：
+   - 调用链中任何层贡献 > 10% 的 total host time → 该层**必须**有对应候选
+
+2. **热路径操作审计表**（见 [proactive_source_analysis.md](../02_bottleneck_analysis/references/proactive_source_analysis.md)「热路径操作审计表」）：
+   - 审计表中任何维度标记为"是"或"否(不随输入变)"的操作 → 该操作**必须**有对应候选
+   - 用 `parse_op_statistic.py` / `parse_operator_memory.py` 数据量化影响范围，占比 <1% 的可跳过
+
+## 确认节点 B：提交前审核（Phase 4 → Phase 5 之间）
+
+本批优化的精度验证和 profiling 确认均通过后、git commit 前，**必须**向用户展示本批总结并等待确认：
+
+1. 总结本批实施的所有优化点及实际效果（性能数据 + 精度数据）
+2. 列出未采纳的方案及原因
+3. 确认 evidence_db 案例已按 [schema](../06_evidence_db/schema.md) 记录到项目工作目录的 `evidence_db/` 下（展示案例文件路径）
+4. 使用 `ask_user_question` 询问用户：
+   - 是否确认提交本批优化
+   - 是否需要回退某些改动
+5. 用户确认后才执行 git commit
+
+> 案例未记录 = 不允许提交。与"精度未通过 = 不允许提交"同等约束力。
+
+## 确认节点 C：继续优化确认（Phase 5 之后）
+
+git commit 完成后，**必须**向用户展示本轮总结并询问是否继续：
+
+1. 展示本轮优化总结（性能提升 + 精度状态）
+2. 展示当前剩余瓶颈（最新 profiling 数据）
+3. 使用 `ask_user_question` 询问用户：是否继续下一轮优化？
+4. 用户确认继续 → 回到 Phase 2 开启下一轮（重新采集 L1）
+5. 用户确认停止 → 结束

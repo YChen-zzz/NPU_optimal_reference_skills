@@ -2,6 +2,11 @@
 
 Edit values here instead of hunting through individual scripts.
 Loaded via common.threshold(script, key).
+
+NOTE: All numeric thresholds are workload-dependent defaults, not universal
+judgments. Tune per model/framework/chip — e.g., fusible_small_us for LLM decode
+(short kernels) differs from prefill; suspect_mac_ratio baseline differs across
+chip generations. Treat values as starting points, validate against your workload.
 """
 
 THRESHOLDS = {
@@ -98,6 +103,18 @@ THRESHOLDS = {
         "extreme_hd_ratio": 10,             # x — host > device * this = extreme ratio
         "extreme_host_us": 5000,            # us — host above this for extreme ratio
         "hd_ratio_display_cap": 10000,      # display "∞" above this
+        # Host category classification rules (C1). Classify by op ROLE, not name —
+        # these patterns are framework defaults, adjust per model/framework. Order
+        # matters: first match wins (sync > dispatch > copy > alloc > framework > compile).
+        "host_category_rules": {
+            "sync (D→H)": ["_local_scalar", "::item", ".item", "numpy"],
+            "dispatch (aclnn launch)": ["aclnn"],
+            "H2D/D2H copy": ["copy_", "_to_copy", "to_copy", "memcpy", "::to"],
+            "alloc/metadata": ["empty", "as_strided", "view", "reshape", "clone",
+                               "contiguous", "detach", "expand", "squeeze", "unsqueeze"],
+            "framework/comm": ["c10d::", "profiler", "broadcast_"],
+            "compile": ["compile", "opcompile"],
+        },
     },
 
     "communication": {

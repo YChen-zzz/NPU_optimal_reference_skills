@@ -1,198 +1,145 @@
-# Profiling 分析推理指南
+# Profiling 分析与优化方法论
 
-## 核心方法论: 五种分析模式
+> 方法论脊柱：**现象 → 归因 → 维度 → 手段**。本文只讲思路（分析思路 + 解决方案设计思路），工具无关——具体由哪个脚本/字段回答，见末尾「工具映射」可替换层，不进正文。脚本 section 改动不影响本方法论。
 
-脚本给出数据和疑点,但从疑点到优化决策之间需要**推理**。推理不是套用固定 pattern,而是运用以下五种分析模式——它们覆盖了所有性能分析场景,agent 遇到预定义路径覆盖不到的新情况时,用这五种模式自行构造推理。
+## 方法论脊柱（四层）
 
-### 模式 1: 横向关联(广度结合)
-
-同一个问题从多个 profiling 文件/维度同时观察,交叉验证收敛到可靠结论。
-
-- **目的**: 消除单信号歧义——单个脚本的输出往往有多种解释,多个来源指向同一方向才可信
-- **方法**: 针对同一怀疑点,分别从不同文件(step_trace / kernel_details / trace_view / operator_details / memory_record)提取相关信息,检查它们是否收敛
-- **何时用**: 单一脚本给出模糊判断时(如 step_trace 利用率 50% 附近难判 host/device bound);需要排除"是不是 profiler 自身开销造成的假象"时
-- **关键**: 各文件侧重不同维度——step_trace 给总体分布、kernel_details 给单 kernel 硬件细节、trace_view 给时序因果、operator_details 给源码映射。真问题会在多个维度同时留痕
-
-### 模式 2: 纵向深入(沿一个点逐层钻入)
-
-从高层信号出发,层层递进到更细粒度的数据,直到定位到源码行级的根因。
-
-- **目的**: 从"模糊的慢"逐步收窄到"具体哪行代码、为什么慢、该怎么改"
-- **方法**: 每一步用更细粒度的文件/工具回答上一步留下的"为什么"
-- **何时用**: 已通过异常定位或横向关联确定一个可疑点,需要追到根因时
-- **典型路径**: op_statistic(哪类算子最耗时) → kernel_details --filter(该算子为什么慢: shape/硬件占比/Block Dim) → operator_details --filter(谁触发的: Call Stack) → 源码阅读(为什么这样写)
-- **关键**: 不要跳层——先确认"确实是这个算子的问题"再深入,避免在错误方向上浪费精力
-
-### 模式 3: 差异对比(两个状态的 delta)
-
-比较两份 profiling 数据,变化量本身就是信息。
-
-- **目的**: 隔离变量——不看绝对值,看什么变了什么没变
-- **方法**: 对比同一指标在两个状态下的差异
-- **适用对比**:
-  - 优化前 vs 优化后: 确认收益来自预期改动(用 diff_profiling)
-  - L0 vs L1 采集: 分离 profiler 注入开销(L1 的 Free/Preparing 可能被 profiler barrier 夸大)
-  - GPU vs NPU: 确定差距在哪个环节(如计算时间相近但 NPU 多出 dispatch gap)
-- **何时用**: 判断优化是否生效;区分 profiler 开销与真实瓶颈;跨平台定位差异根源
-- **关键**: 对比的两份数据必须只有一个变量不同(相同输入/相同 schedule/相同 step)
-
-### 模式 4: 异常定位(分布中找离群)
-
-看同类数据的分布,找打破 pattern 的异常点。
-
-- **目的**: 从大量正常数据中精确定位少数真正有问题的点
-- **方法**: 看分桶/排序/分位数,找显著偏离均值的条目
-- **何时用**: 全局统计看起来"还行"但实际有隐藏瓶颈时;需要从上千 kernel 中圈定嫌疑对象时
-- **关键**: 离群 = 线索,不等于结论。发现离群点后需用模式 2(纵向深入)或模式 1(横向关联)确认它是真问题还是正常变异
-- **脚本已做的**: Suspect Kernels(高耗时低利用率)、Top Stalls(聚合后最大的空隙)、dispatch latency top-N——这些本质都是异常定位
-
-### 模式 5: 时序因果(时间轴上的前后关系)
-
-利用事件的时间顺序推断因果关系。
-
-- **目的**: 建立"谁导致了谁"/"谁阻塞了谁"的因果链
-- **方法**: 在 trace_view 的时间线上观察事件的前后关系——A 总是紧挨在 B 之前出现,说明 A 可能导致/阻塞了 B
-- **何时用**: 知道"哪里慢"(如某处有大 gap)但不知道"为什么慢"时;需要区分"是 host 来不及喂"还是"device 在等某个同步"时
-- **关键**: parse_trace_view 的 stall 聚合(按 kernel 对)是时序因果的结构化输出;compile 事件紧贴在 device gap 前 = 编译导致的因果
-
-### 五种模式的协作
-
-实际分析不是只用一种模式,典型组合顺序:
+把"观察到什么"一步步推到"怎么设计改法"：
 
 ```
-1. 异常定位 → 从全局数据中圈定嫌疑点(从上千 kernel 缩到几个)
-2. 纵向深入 → 沿嫌疑点逐层钻到候选根因
-3. 横向关联 → 用其他文件交叉验证候选根因(单来源不可信)
-4. 时序因果 → 在 trace 中确认事件间的因果方向
-5. 差异对比 → 优化后确认收益确实来自预期改动
+现象层  观察到什么（表象 + 瓶颈类型）
+  ↓ 为什么慢 / 属于哪类开销
+归因层  属于哪类浪费（识别信号 + 量化上限）
+  ↓ 用哪类手段能消除
+维度层  去重 / 复用 / 掩盖 / 替换（每维消除哪些浪费）
+  ↓ 具体怎么设计 + 怎么验证
+手段层  设计思路 + 等价性验证 + 多维度取舍
 ```
 
-不是每次分析都走完五步——简单问题可能 1→2 就定位了;复杂问题可能在 2↔3 之间反复。
+### 1. 现象层：观察到什么
 
----
+只回答"看起来是什么问题"，不回答为什么。从 profiling 读出表象并判定瓶颈类型：
 
-## 参考路径(已验证的信号组合实例)
+- 设备利用率低 + Free 大 → Host-Bound（host 喂不动设备）
+- 利用率高 + mac 占主导 → Compute-Bound 嫌疑
+- 利用率高 + mte 占主导 → Memory-Bound 嫌疑
+- Communication 占比高 → Comm-Bound 嫌疑
+- empty_tensor 高频 + Free 大 → Allocator-Bound 嫌疑
 
-以下是经真实数据验证的典型信号组合,作为**快速匹配入口**——agent 遇到匹配的组合可直接走对应方向,遇到覆盖不到的新场景则用五种模式自行推理。这里只保留每类瓶颈最具代表性的一条,更多组合靠模式推导。
+瓶颈类型决定归因层往哪个方向查（Host-Bound 查 host 侧浪费、Compute-Bound 查 compute 饱和…）。判定用利用率/硬件占比/通信占比，具体阈值是负载相关默认值（见工具映射层），非普适判据。
 
-### Host-Bound + compile 贯穿全程
+### 2. 归因层：属于哪类浪费
 
-step_trace 利用率低 + trace_view compile B 类(贯穿全程) + kernel_details 硬件占比正常
+把"慢"归到一类可消除的浪费。每类给**识别信号（概念）+ 量化上限（概念）**——上限是该类浪费占总时间的比例，是收益的理论天花板。排序见「收益排序」。
 
-→ **每步在线编译**,非算子问题,是执行模式问题
-→ 分析模式: 横向关联(step_trace + trace_view + kernel_details 三方收敛)
-→ 行动：关 jit_compile / 固定 shape / 图编译
+1. **显式同步开销**——host 主动等 device（.item/.numpy/显式 sync/empty_cache）。信号：host 侧出现 D→H 同步类操作且占比高。上限：同步类 host 时间占比。典型：HuggingFace Trainer 每步 grad clip/NaN check 调 .item()。
+2. **dispatch/调度开销**——host 在框架调度（Module.__call__、hook、分发）而非计算。信号：host dispatch 时间占比高、设备 idle 但 host 在框架层忙碌。上限：dispatch 类 host 时间 / dispatch 延迟占比。
+3. **内存管理阻塞**——host 卡在内存管理 API（分配/释放/映射）。信号：内存管理类 host 时间占比高、高频分配释放。上限：内存管理类 host 时间占比。
+4. **在线编译/重编译**——每步重新编译算子。信号：编译事件贯穿全程（非仅预热期）。上限：编译时间占比。
+5. **内存带宽受限**——kernel 在搬数据而非算。信号：mte 占比远大于 mac、带宽利用率接近峰值。上限：带宽受限段的 device 时间。
+6. **compute 饱和**——计算密集且硬件已充分利用。信号：mac 高 + 并行度满 + 利用率高。上限：该 kernel 群 device 时间（且总可优化空间 <10% 时此类别为主）。
+7. **布局/格式转换**——运行时 transpose/cast/format 转换。信号：非 ND 格式占比高 / Transpose·Cast 类耗时多。上限：数据搬运类耗时占比。
+8. **通信同步等待**——通信时间花在等而非传。信号：通信 Wait 占比高。上限：通信等待时间。
+9. **小算子碎片**——大量短 kernel 串行。信号：短 kernel 占比高、kernel 数极多。上限：碎片段累计耗时。
+10. **延迟未掩盖**——存在可并行的独立工作但未重叠。信号：device idle 但有可并行计算、多流并发占比低。上限：可掩盖的 idle/延迟。
 
-### Host-Bound + host2device bound 区段
+> 归因用五种分析模式推理（见后文），不套固定 pattern。多类浪费并存时各自量化上限，按上限排序。
 
-step_trace 利用率低 + trace_view 第 4 节检出 host2device-bound region（连续多个算子 device 启动紧贴 launch、队列空转）+ 无 compile B 类
+### 3. 维度层：用哪个优化维度消除
 
-→ **host dispatch 喂不动设备**：host 侧串行下发跟不上 device 消费，设备空等
-→ 分析模式: 时序因果(trace_view launch↔device gap 游程) + 源码映射(async_npu flow 回连 cpu_op Call stack)
-→ 行动：碎片化小 op 链（逐元素/广播类）→融合/图编译消除逐算子 dispatch；host Python 逻辑重→下沉/预计算；交叉验证 operator_details 确认 host self duration
+四维度是"可消除浪费的手段类别"。归因层的每类浪费映射到一个或多个维度：
 
-### 利用率高 + mte_ratio >> mac_ratio
+| 浪费类别 | 去重 | 复用 | 掩盖 | 替换 |
+|---|---|---|---|---|
+| 显式同步 | 消除同步 | | | 异步化 |
+| dispatch 调度 | 扁平化 | | 图编译掩盖 | |
+| 内存管理阻塞 | | 预分配/复用 | | |
+| 在线编译 | 避免重编译 | | | |
+| 内存带宽受限 | | 减少中间 tensor | | 换算法降访存 |
+| compute 饱和 | | | | 量化/换算法 |
+| 布局转换 | 消除多余转换 | | | 改布局 |
+| 通信同步 | 减少通信 | | 通信-计算重叠 | 换通信策略 |
+| 小算子碎片 | 融合 | | | |
+| 延迟未掩盖 | | | 多流/双 buffer/重叠 | |
 
-step_trace 利用率高 + kernel_details 硬件单元中 mte（搬运）远大于 mac（计算）
+四维度正交可组合：前三者改变工作量/方式，替换改变同一工作的物理执行路径。一个浪费常可被多维度消除（如 dispatch 既可去重扁平化、也可掩盖用图编译）——选哪个进手段层按收益与风险取舍。
 
-→ **Memory-Bound**：kernel 在忙但大部分时间在搬数据而非计算
-→ 分析模式: 纵向深入(--filter 缩到具体算子和 shape)
-→ 行动：shape 不友好考虑 pad/合并；全局带宽瓶颈考虑减少同时存活大 tensor
+### 4. 手段层：怎么设计 + 怎么验证
 
-### 某算子 mac 高 + Block Dim 满 + cube_util 高
+每个维度的设计思路（具体手段模式见 `03_optimization/references/` 对应文件，这里讲思路）：
 
-kernel_details 中某算子 mac_ratio 高 + Block Dim 已达硬件上限 + cube_utilization 高
+- **去重**：识别"必要 vs 冗余"——同一结果被多次计算、可合并的独立调用、推理时永不走的分支。设计思路：合并调用、删冗余、清理框架 wrapper。
+- **复用**：识别"之后还会被需要"——相同尺寸 tensor 反复分配释放、跨步不变的计算结果。设计思路：预分配 buffer + `out=` 写入、预计算缓存、原地操作。
+- **掩盖**：识别"无数据依赖"——两段工作可并行。设计思路：通信-计算重叠、双 buffer 流水、多流并行、图编译（把逐算子 dispatch 的间隙用设备内部流水掩盖）。约束：同一 communicator 的集合操作不能跨流并发；启动前确保输入就绪。
+- **替换**：识别"更便宜的等价"——融合算子、NPU 友好 API、换算法、改 dtype。设计思路：查融合算子库、换等价表达、降精度。
 
-→ **真 Compute-Bound**：计算密集且硬件利用已充分
-→ 分析模式: 异常定位(从分布中找已是上限的点) → 判定终局
-→ 行动：考虑量化/换算法降复杂度,或判定为终局(无优化空间)
+**等价性验证（通用步骤，动手前必做）**：任何手段实施前先验证改动等价，避免引入精度/行为 bug：
+- 数值等价：cosine / 相对误差在阈值内（阈值在比较前声明，按输出类型选指标）
+- shape 等价：输入输出 shape 不变（除非刻意改）
+- 行为等价：边界条件、控制流、随机性一致（dtype 变更尤需验证累积误差）
+- 验证手段：微基准先行（独立小 benchmark 验证方向），再小样本，再全量。
 
-### memory_record 高频抖动 + 同尺寸反复分配 + empty host 耗时高
+**多维度冲突取舍思路**：
+- 维度间有依赖：去重（减少工作量）通常先于复用/掩盖（对更小的工作集优化）。
+- 同一浪费多维度可消：按收益上限 + 风险取（如 dispatch：去重扁平化风险低但改动大，图编译收益大但可能不兼容——子分支探索）。
+- 维度间有冲突：掩盖改流可能影响替换的等价性——先定主维度，次维度在主维度约束下评估。
+- 图编译横跨去重/掩盖/在线编译多个方向，作为手段评估时归入它解决的主方向，"可能不兼容"作风险标注不压低主排序。
 
-memory_record 高频抖动 + operator_memory 同尺寸反复分配 + trace_view 中 empty 有高 host 耗时
+## 收益排序（横切操作）
 
-→ **Allocator-Bound**: 反复申请释放同一 buffer
-→ 分析模式: 横向关联(memory_record + operator_memory + trace_view 交叉验证)
-→ 行动：预分配 + `out=` 写入(复用维度)
+多类浪费并存时，按归因层的**量化上限降序**排候选——上限是该类浪费占总时间的比例。`parse_step_trace` 的可优化空间是总上限，各归因类别的开销占比是单项上限。
 
-### 小算子 > 50% + Block Dim=1 多 + 利用率低
+- 主排序：按上限降序（数据驱动，非固定全局序；随瓶颈类型变——Host-Bound 时 host 侧类别靠前，Compute-Bound 时 compute 饱和到最前）。
+- 次级筛选（决定本轮是否实施，不进主排序）：单点零风险→直接做；根因级需验证→微基准先行；高风险（图编译/dtype）→子分支探索；终局（compute 饱和且可优化空间<10%）→判定无空间即止。
 
-parse_step_trace Optimizable space > 30% + parse_kernel_details Short kernel ratio (<20us) > 60% + parse_trace_view Dispatch/kernel-active ratio > 50%
+## 五种分析模式（推理方法）
 
-→ **Decode 场景碎片化**：per-token shape 太小导致并行度不足 + dispatch 占比高
-→ 分析模式: 异常定位(avg duration <20us 离群) + 横向关联(step_trace 可优化空间 + kernel_details short kernel + trace_view dispatch ratio 三方收敛)
-→ 行动：fp16/bf16 启用融合算子减少 kernel 数,或图编译;若 dispatch 未充分重叠(trace_view gap > 50us 占比高)则 flat forward 消除 Module.__call__ dispatch
+归因层推理用的思维工具。脚本给数据和疑点，从疑点到决策需要推理——不是套固定 pattern，而是用以下五种模式自行构造。
 
-### Communication Wait% > 80% + step_trace 通信占比高
+### 模式 1：横向关联（广度结合）
+同一问题从多个文件/维度交叉验证收敛。目的：消除单信号歧义，多来源指向同方向才可信。何时用：单脚本判断模糊（如利用率 50% 难判 host/device）、需排除 profiler 自身开销假象时。关键：真问题会在多维度同时留痕。
 
-communication.json 中 Wait Time 占总通信时间 >80% + step_trace Communication 列占比高
+### 模式 2：纵向深入（沿一个点逐层钻入）
+从高层信号层层钻到源码行级根因。典型路径：op_statistic（哪类算子最耗时）→ kernel_details --filter（为什么慢）→ operator_details --filter（谁触发）→ 源码（为什么这样写）。关键：不跳层，先确认"确实是这个算子的问题"再深入。
 
-→ **同步瓶颈（非带宽问题）**：通信时间几乎全在等，不在传
-→ 分析模式: 横向关联(communication + trace_view + step_trace 三方收敛)
-→ 行动：查通信-计算重叠（hide_latency）、查 straggler rank（某 rank 慢导致其他等）、减少同步点
+### 模式 3：差异对比（两个状态的 delta）
+看变化量而非绝对值。适用：优化前后（确认收益）、L0 vs L1（分离 profiler 注入开销）、GPU vs NPU（定位差距环节）。关键：只允许一个变量不同。
 
----
+### 模式 4：异常定位（分布中找离群）
+看分布找显著偏离的少数点。关键：离群=线索≠结论，需模式 2/1 确认。脚本的 Suspect Kernels、Top Stalls、dispatch top-N 本质都是异常定位。
 
-### Projected peak > 80% HBM after waste elimination
+### 模式 5：时序因果（时间轴前后关系）
+用事件时间顺序推断因果——A 总紧挨 B 之前 → A 可能导致/阻塞 B。何时用：知道"哪里慢"不知"为什么"、需区分"host 喂不动"还是"device 等同步"时。
 
-operator_memory 的 Parallelism Trigger 分析显示:消除短命大 tensor(waste)后,投影峰值仍 > 80% HBM
+**协作顺序**（典型，非固定）：异常定位圈定嫌疑 → 纵向深入钻到候选根因 → 横向关联交叉验证 → 时序因果确认因果方向 → 差异对比确认收益。简单问题 1→2 即定位，复杂问题在 2↔3 反复。
 
-→ **单卡真正放不下**(不是浪费导致,是必要数据太大)
-→ 分析模式: 差异对比(waste vs essential 的分类)
-→ 行动: **此处 profiling 分析到头了**——需要转入源码分析:
-  1. 读 parallel_design.md 理解切分原则
-  2. 用 operator_details Call Stack 定位大 tensor 的源码位置
-  3. 从计算结构判断哪些维度可切
-  4. 切分后重新 profiling 验证
-→ 注意: 不要在 profiling 层面试图决定怎么切——切分方案依赖计算图结构,只有源码能回答
+## 工具映射（可替换层）
 
----
+方法论里的每个"信号/上限"由哪个脚本/字段回答。本层可替换——脚本改 section 不影响方法论正文。
+
+| 归因类别 | 识别信号来源 | 量化上限来源 |
+|---|---|---|
+| 显式同步 | operator_details Host Time by Category(sync) + api_statistic(sync) | sync 类 host 时间占比 |
+| dispatch 调度 | operator_details Host Time by Category(dispatch) + trace_view dispatch latency | dispatch 类 host 时间 / dispatch-kernel ratio |
+| 内存管理阻塞 | api_statistic(memory-mgmt) + operator_memory 重复分配 + trace_view idle 成因 | memory-mgmt 类 host 时间占比 |
+| 在线编译 | trace_view Suspect 编译分类(A/B) + api_statistic(compile) | 编译时间占比 |
+| 内存带宽受限 | kernel_details mte/mac + trace_view counter HBM 带宽 | 带宽受限段 device 时间 |
+| compute 饱和 | kernel_details 真 compute-bound + step_trace 可优化空间 | kernel 群 device 时间 |
+| 布局转换 | kernel_details 非 ND 格式 + op_statistic data movement | 搬运类耗时占比 |
+| 通信同步 | communication Wait% + step_trace 通信占比 | 通信等待时间 |
+| 小算子碎片 | kernel_details fusible + short kernel ratio | 碎片段累计耗时 |
+| 延迟未掩盖 | trace_view stream concurrency + idle 成因 | 可掩盖 idle/延迟 |
 
 ## 脚本信息不够时的深入方法
 
-当脚本输出不足以做判断时，直接读原始文件:
+当脚本输出不足时直接读原始文件：
 
 | 想了解什么 | 去哪里 | 看什么 |
-|-----------|--------|--------|
-| 某算子的实际 input shape | `kernel_details.csv` | Input Shapes 列 |
-| 某次分配时系统内存有多满 | `operator_memory.csv` | Allocation Total Allocated(MB) |
-| 某算子在 forward 中出现的位置序列 | `kernel_details.csv` | 按 Start Time 排序搜目标算子 |
-| 完整的 Python 调用链 | `operator_details.csv` | Call Stack 列 |
-| 两个 kernel 之间的真实 gap | `kernel_details.csv` | Start Time - 上一个的 (Start Time + Duration) |
-| 某个 step 的独立数据 | `kernel_details.csv` | 按 Step Id 列过滤 |
-| L0 vs L1 采集差异 | 两份 profiling | 分别运行脚本对比，Level1 bubble 可能被 profiler barrier 夸大 |
-
----
-
-## 多问题并存时的优先级
-
-**排序原则**：主排序按**当前瓶颈类型下各方向的收益上限**降序（数据驱动，非固定全局序）；确定性/实施风险作为"本轮是否实施"的次级筛选，不进主排序。每个方向都挂 parse 脚本量化上限——`parse_step_trace` 的 Optimizable space 是总上限，各方向的开销占比是单项上限，按上限降序排候选。
-
-> 顺序随瓶颈类型变：Host-Bound 时 #1–#4 靠前；Compute-Bound 时 #8 自动到最前；Memory-Bound 时 #6 靠前。编号是方向清单，不是全局优先序。
-
-```
-1. 显式同步消除（.item/.numpy/H2D/empty_cache）→ 消除（单点修复，收益确定）
-   瓶颈: Host-Bound | 上限: operator_details §Host Time by Category 的 sync% + api_statistic sync 类别
-2. 在线编译/重编译 → 关 jit_compile / 固定 shape（根因级，收益大）
-   瓶颈: Host-Bound | 上限: trace_view §6 Suspect Signals 编译 B 类 + api_statistic compile 类别
-3. allocator/内存管理阻塞（empty_tensor 高频、aclrtFree/Unmap 阻塞）→ 预分配/复用
-   瓶颈: Host/Allocator-Bound | 上限: api_statistic memory-mgmt% + operator_memory 重复同尺寸分配 + trace_view §5c idle 成因 mem-mgmt
-4. 框架 dispatch 开销 → flat forward / 图编译
-   瓶颈: Host-Bound | 上限: operator_details §Host Time by Category dispatch% + trace_view §3 Dispatch/kernel-active ratio
-5. 碎片算子融合 / 等价替换 → 逐个验证
-   瓶颈: 通用 | 上限: kernel_details fusible sequences + Short kernel ratio
-6. 数据布局/format 转换（Transpose/Cast 多、非 ND 格式）→ 预转置 + 改布局
-   瓶颈: Memory-Bound | 上限: kernel_details 非 ND 格式占比 + op_statistic data movement overhead
-7. 掩盖/重叠（stream overlap / 通信-计算重叠 / 双 buffer）→ 流水并行
-   瓶颈: 通用 | 上限: trace_view §5b Stream Concurrency（≥2 流并发占比）+ step_trace Overlapped
-8. kernel 本身慢（Compute-Bound）→ 降精度 / 换算法 / 判定终局
-   瓶颈: Compute-Bound | 上限: step_trace Optimizable space <10% 时此方向为主 + kernel_details 真 compute-bound 列表
-```
-
-**图编译**是横切**手段**（解决 #2 在线编译 / #4 dispatch / #5 融合），不单列优先级；评估时归入对应方向的实施手段，"可能不兼容"作为风险标注，不压低主排序。
-
-**确定性/风险筛选**（次级，决定本轮是否实施）：
-- 单点修复、零风险（#1）→ 本轮直接做
-- 根因级、收益大但需验证（#2/#3/#4）→ 微基准先行
-- 高上限但高风险（图编译、dtype 变更）→ 子分支探索
-- 终局判定（#8 在 Optimizable<10% 时）→ 判定无优化空间即止
+|---|---|---|
+| 某算子实际 input shape | kernel_details.csv | Input Shapes 列 |
+| 某次分配时系统内存多满 | operator_memory.csv | Allocation Total Allocated(MB) |
+| 某算子在 forward 中的位置序列 | kernel_details.csv | 按 Start Time 排序搜目标算子 |
+| 完整 Python 调用链 | operator_details.csv | Call Stack 列 |
+| 两个 kernel 间真实 gap | kernel_details.csv | Start Time − 上一kernel 的(Start+Duration) |
+| 某 step 独立数据 | kernel_details.csv | 按 Step Id 列过滤 |
+| L0 vs L1 采集差异 | 两份 profiling | 分别跑脚本对比，L1 bubble 可能被 profiler barrier 夸大 |

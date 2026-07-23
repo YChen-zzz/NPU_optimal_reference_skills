@@ -40,22 +40,15 @@ def _parse_call_stack(raw: str) -> list:
 def _host_category(name: str) -> str:
     """Classify an op name into a host-time category (C1 decomposition).
     sync vs dispatch vs alloc have opposite optimization directions, so
-    decomposing total host time by category drives optimization direction."""
-    n = str(name)
-    low = n.lower()
-    if "_local_scalar" in n or low.endswith("::item") or ".item" in low or "numpy" in low:
-        return "sync (D→H)"
-    if any(k in n for k in ("aclnn",)) and "Tiling" not in n:
-        return "dispatch (aclnn launch)"
-    if any(k in low for k in ("copy_", "_to_copy", "to_copy", "memcpy")) or n.endswith("::to"):
-        return "H2D/D2H copy"
-    if any(k in n for k in ("empty", "as_strided", "view", "reshape", "clone",
-                            "contiguous", "detach", "expand", "squeeze", "unsqueeze")):
-        return "alloc/metadata"
-    if n.startswith("c10d::") or "Profiler" in n or "broadcast_" in n:
-        return "framework/comm"
-    if "compile" in low or "opCompile" in n:
-        return "compile"
+    decomposing total host time by category drives optimization direction.
+    Rules are framework-default patterns from thresholds.py — adjust per model."""
+    rules = threshold("operator_details", "host_category_rules", {})
+    if not rules:
+        return "other"
+    low = str(name).lower()
+    for cat, patterns in rules.items():
+        if any(p.lower() in low for p in patterns):
+            return cat
     return "other"
 
 

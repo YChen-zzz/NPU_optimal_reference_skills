@@ -76,11 +76,15 @@ print(torch.__version__, torch_npu.__version__, torchair.__version__)
 def init_device(device_str: str):
     if device_str.startswith("npu"):
         import torch_npu
-        # NPU 适配三件套：关闭 JIT 编译 + 关闭内部格式（保证确定性和兼容性）
+        # 默认关闭以保确定性和兼容性——这是起点，不是不可协商的前提。
+        # 验证后可逐个开启：jit_compile=True 可能提速但触发 tiling error；
+        # allow_internal_format=True 可能提速但引入格式转换偏差。
         torch.npu.set_compile_mode(jit_compile=False)
         torch_npu.npu.config.allow_internal_format = False
     return torch.device(device_str)
 ```
+
+> 这两个设置是**确定性与性能的权衡**，不是通用最优。默认关闭确保结果可复现和兼容性；若 profiling 显示 format 转换或 JIT 编译是瓶颈，可逐个开启并验证精度无退化。开/关的选择应基于 profiling 数据，不是默认值。
 
 ---
 
