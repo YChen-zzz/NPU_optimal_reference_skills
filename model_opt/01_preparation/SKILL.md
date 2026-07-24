@@ -35,9 +35,9 @@ cfg = json.load(open("config.json"))
 # 关注：d_model / hidden_size, num_layers, num_heads, vocab_size, model_type
 ```
 
-### 参考文档对比
+### 已有文档阅读
+- 阅读项目中的Readme、设计文档等
 - 若有已有适配文档（如其他版本、同系列模型），先列出差异点：**可复用 vs 需纠偏**。
-- 重点关注：自定义算子、特殊注意力变体、非标准位置编码。
 
 ### 特殊输入识别
 - 非文本输入（图像、蛋白质序列、音频等）需确认预处理路径和 tokenizer/encoder 是否独立。
@@ -49,7 +49,7 @@ cfg = json.load(open("config.json"))
 
 ### CANN 环境诊断
 ```bash
-npu-smi info                          # 确认芯片型号、驱动版本、卡数
+npu-smi info                          # 确认芯片型号、驱动版本、卡数、确定空闲卡
 ls $ASCEND_HOME_PATH/opp/             # 检查 OPP 算子包
 ls ~/Ascend/ascend-toolkit/           # 用户目录（优先级高于系统目录）
 source ~/Ascend/ascend-toolkit/latest/set_env.sh  # 激活工具链
@@ -91,6 +91,9 @@ def init_device(device_str: str):
 ## 三、测试数据准备
 
 **原则**：小而代表性，能快速复现问题，不浪费时间跑全量。
+
+### 数据集构造
+如果有现成的测试集，进行**轻量化**和**代表性抽样**；如果没有，则按以下原则构造
 
 ### 轻量测试集
 - 按长度/关键特征分桶（如序列长度：短/中/长），每桶抽若干条。
@@ -205,53 +208,42 @@ export CPU_AFFINITY_CONF=1    # CPU 绑核，减少调度抖动，使采集数�
 
 采集前运行本 skill 提供的环境校验脚本（位于本 skill 的 `scripts/validate_profiling_env.py`）：
 ```bash
-python <skill_path>/01_preparation/scripts/validate_profiling_env.py --device npu:0 --output-dir ./profiling
+python <skill_path>/01_preparation/scripts/validate_profiling_env.py --device npu:x --output-dir ./profiling
 ```
-> 注意：`<skill_path>` 是本 skill 所在目录的实际路径，agent 执行时需替换为真实路径。
+> 注意：`<skill_path>` 是本 skill 所在目录的实际路径，agent 执行时需替换为真实路径。`npu:x` 指定要采集的 NPU 卡号，`--output-dir` 指定输出目录。
 
 ---
 
 ## 五、精度验证脚本构建
 
-**目标**：GPU 和 NPU 分别离线保存结果，事后纯 numpy 对比，不依赖双卡同时在线。
+**目标**：在优化开始前，保存一份可信 baseline 输出，并构建可一键运行的对比脚本，使后续每次优化都能快速验证精度是否退化。
+
+### Baseline 来源与对比策略
+
+Baseline 来源、对比指标、阈值的确定**不在本阶段定义**——遵循 [04_accuracy_assurance/SKILL.md](../04_accuracy_assurance/SKILL.md) 的方法论：
+
+- **Baseline 来源**：按优先级（官方基线 → 用户指定 → NPU 优化前自身输出），详见 [baseline_policy.md](../04_accuracy_assurance/references/baseline_policy.md)。不假定必须是 GPU 输出——取决于项目实际情况。
+- **对比指标**：按输出类型选择（连续向量 → cosine + max_abs；离散序列 → 匹配率；聚合标量 → 相对误差），详见 04_accuracy_assurance「指标选择原则」。不硬编码特定指标。
+- **阈值**：必须在比较前声明，不可事后调整。参考阈值见 04_accuracy_assurance，最终以项目实际情况为准。
 
 ### 输出保存约定
+
+agent 应根据项目的输出类型选择保存格式，原则是：离线可加载、不依赖设备、可复现。
+
 ```python
 import numpy as np, json
 
-# 连续输出（logits、embedding）-> npy
-np.save(f"outputs/{sample_id}_logits.npy", logits.cpu().float().numpy())
-
-# 离散输出（token ids、标签）-> json
-with open(f"outputs/{sample_id}_tokens.json", "w") as f:
+# 示例：连续输出 -> npy，离散输出 -> json
+np.save(f"baseline/{sample_id}_output.npy", output.cpu().float().numpy())
+with open(f"baseline/{sample_id}_tokens.json", "w") as f:
     json.dump({"tokens": token_ids}, f)
 ```
 
-### 对比指标设计
-| 输出类型 | 主指标 | 辅助指标 |
-|---|---|---|
-| 连续向量（logits/embedding） | cosine similarity | mean abs diff |
-| 离散序列（token ids） | 完全匹配率 | top-1 token 匹配率 |
-| 聚合标量（loss/score） | 相对误差 |a-b|/|a| | -- |
+### 对比脚本
 
-### 离线对比脚本
-```python
-# compare_outputs.py -- 不依赖任何设备，纯 numpy
-gpu_logits = np.load("gpu_outputs/logits.npy")
-npu_logits = np.load("npu_outputs/logits.npy")
+对比脚本必须是自包含的（给定 baseline 目录和当前输出目录即可独立运行），不依赖任何设备。指标和阈值在脚本中显式声明，运行后输出判定结论并保存为文件。
 
-cos_sim = np.dot(gpu_logits.flatten(), npu_logits.flatten()) / (
-    np.linalg.norm(gpu_logits) * np.linalg.norm(npu_logits)
-)
-abs_diff = np.abs(gpu_logits - npu_logits).mean()
-print(f"cosine={cos_sim:.6f}  mean_abs_diff={abs_diff:.6f}")
-```
+### 确定性验证
 
-### NPU 确定性验证条件
-```python
-model.eval()
-with torch.no_grad():
-    # 确保 jit_compile=False + allow_internal_format=False 已在 init_device 中设置
-    outputs = model(inputs)
-```
-> 同一输入的 NPU 结果应完全可复现 (bit-exact)。若不可复现，排查：dropout 未关闭、随机算子、或 `allow_internal_format` 未禁用。
+优化前的 baseline 采集和优化后的输出采集，必须在相同的确定性条件下进行。推理场景：`model.eval()` + `torch.no_grad()` + 固定输入 + 关闭随机性。详见 [04_accuracy_assurance/SKILL.md](../04_accuracy_assurance/SKILL.md)「确定性保证」。
+

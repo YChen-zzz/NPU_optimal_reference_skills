@@ -56,16 +56,26 @@ description: 优化实施：用去重/复用/掩盖/替换四维度框架实施�
 
 ## 其他 Reference 索引
 
-以下文件按需加载，不是每次优化都需要：
+以下文件**不是"按需加载"**——Phase 3 开始前必须对每个文件确认读取状态：
 
-| Reference | 加载触发条件 |
-|-----------|------------|
-| [graph_compile_and_cann.md](references/graph_compile_and_cann.md) | 考虑图编译或需要设置 CANN 环境变量时 |
-| [npu_checklist.md](references/npu_checklist.md) | 接到新项目时做首次静态代码扫描，不依赖 profiling |
-| [npu_operator_reference.md](references/npu_operator_reference.md) | 需要查找 NPU 融合算子的具体 API 签名和注意事项时 |
-| [decode_optimization.md](references/decode_optimization.md) | 自回归 decode 场景的性能问题时 |
-| [parallel_design.md](references/parallel_design.md) | profiling 显示投影峰值仍 > 80% HBM、或 compute-bound 到顶、或已多卡但效率低时 |
-| [training_tuning.md](references/training_tuning.md) | 训练场景的 OS 级调优（TASK_QUEUE、CPU 绑核、tcmalloc）时 |
+| Reference | 读取状态 | 可执行 insight（一句话） |
+|-----------|----------|------------------------|
+| [eliminate_redundancy.md](references/eliminate_redundancy.md) | 已读 / 跳过(原因) | (从此文件中提取的一个可执行手段) |
+| [reuse_and_precompute.md](references/reuse_and_precompute.md) | 已读 / 跳过(原因) | ... |
+| [hide_latency.md](references/hide_latency.md) | 已读 / 跳过(原因) | ... |
+| [equivalent_substitution.md](references/equivalent_substitution.md) | 已读 / 跳过(原因) | ... |
+| [graph_compile_and_cann.md](references/graph_compile_and_cann.md) | 已读 / 跳过(原因) | ... |
+| [npu_checklist.md](references/npu_checklist.md) | 已读 / 跳过(原因) | ... |
+| [npu_operator_reference.md](references/npu_operator_reference.md) | 已读 / 跳过(原因) | ... |
+| [decode_optimization.md](references/decode_optimization.md) | 已读 / 跳过(原因) | ... |
+| [parallel_design.md](references/parallel_design.md) | 已读 / 跳过(原因) | ... |
+| [training_tuning.md](references/training_tuning.md) | 已读 / 跳过(原因) | ... |
+
+**规则**：
+- "跳过"必须有具体原因（如"当前场景无自回归 decode"），不可写"按需"
+- 任何文件如果被已读的文件引用（含递归引用），且自身未读，必须补充读取
+- "可执行 insight"列强制 agent 从每个文件中提取至少一个可在当前 case 上执行的手段，而非泛泛读完就忘
+- 原表中"加载触发条件"仅作参考——条件满足时文件状态必须为"已读"，不满足时可标"跳过"但需附原因
 
 ## 通用原则
 
@@ -74,6 +84,8 @@ description: 优化实施：用去重/复用/掩盖/替换四维度框架实施�
 - 保留原始实现供 fallback
 - 权重修改须保持 checkpoint 可加载且数值等价：默认保持 state_dict key/结构不变；当结构性融合必须改变结构时，须提供与模型同处的确定性重映射函数并通过等价性验证（详见 [reuse_and_precompute.md](references/reuse_and_precompute.md)「加载时权重重映射」）
 - 优化尝试失败也要记录（what + why + 实际效果），避免重复踩坑
+- **优化方向正交性**：四维度（去重/复用/掩盖/替换）的优化方向是正交的。一个方向的失败不影响其他方向。例如"融合算子替换失败"不影响"权重合并（去重）"的实施——两者独立。禁止因一个方向失败而连带放弃独立的方向
+- **深度优先于广度**：对每个优化方向，穷尽探索（多种实现、完整验证）比浅尝多个方向更有价值。如果环境支持子 agent，建议对独立的方向/算子 spawn 子 agent 逐个深挖，避免因同时处理太多方向而浅尝辄止
 
 ### 方向放弃标准
 
@@ -83,5 +95,11 @@ description: 优化实施：用去重/复用/掩盖/替换四维度框架实施�
 2. **每种实现记录**：实现描述、耗时、与基线对比、慢的原因（需 profiling 数据支撑，如 `parse_operator_details` 证实框架 overhead）
 3. **失败原因归类**：概念错误 / 框架实现 overhead / 硬件不友好 / 其他
 4. **若失败原因为"框架实现 overhead"**：自定义实现是**强制要求**——只有自定义实现也失败后才能放弃该方向
+5. **验证步骤完整性**：每种实现必须经过"微基准 → 小样本 → 全量"三步验证。在某一步放弃时，必须填写：
+   - 放弃于哪一步（微基准/小样本/全量）
+   - 为什么不能继续下一步（具体数值，如"微基准 diff=X，超过阈值 Y"）
+   - 是否尝试过调整参数后重试（如换 dtype、换 shape、换输入顺序）
+
+   不合理放弃原因（自动驳回）："我觉得不会通过"（未实测）、"diff 看起来有点大"（未量化）、"和另一个方向耦合"（独立方向不应耦合，见通用原则"优化方向正交性"）
 
 > 核心原则：框架实现 ≠ 概念验证。框架的 Cache 类、generate 函数等带有 Python 调度开销，其失败不代表优化概念本身无效。

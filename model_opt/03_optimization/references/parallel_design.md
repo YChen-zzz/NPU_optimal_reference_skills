@@ -10,7 +10,7 @@
 2. **计算到顶仍不够快**: `parse_kernel_details` 显示 compute-bound(mac_ratio 高 + cube_util 高 + Block Dim 满),单卡已优化到硬件上限但性能仍不满足
 3. **已多卡但效率低**: `parse_step_trace` 显示已有多卡通信(comm 列有值)但 device 利用率 < 50% → 当前并行策略需改进
 
-⚠ **本文档的切分方案需要源码分析,profiling 只提供 trigger。** 进入后:
+WARNING **本文档的切分方案需要源码分析,profiling 只提供 trigger。** 进入后:
 1. 用 operator_details 的 Call Stack 定位大 tensor 的源码位置
 2. 阅读该处的计算结构,找出可切分的大维度
 3. 按下方"切分维度选择"原则评估

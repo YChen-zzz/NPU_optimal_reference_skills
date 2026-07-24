@@ -8,13 +8,13 @@
 
 按以下类别聚合判断方向：
 
-| 类别 | 典型算子 | 优化方向 |
+| 类别 | 典型算子 | 问题特征 |
 |------|---------|---------|
-| tensor metadata ops | empty_tensor, view, as_strided | 预分配 buffer、减少临时 tensor |
-| Python dispatch wrapper | aten::matmul, aten::dropout | flat forward、去除冗余调用 |
-| D→H sync ops | aten::item, aten::_local_scalar_dense | 消除 .item()/.numpy()，缓存或延迟到 batch 结束 |
-| ACL kernel launch | aclnnMm, aclnnRmsNorm | 图编译（通常不可单独压缩） |
-| format/sync | format_cast, SynchronizeStream | 统一 layout、消除运行时 transpose |
+| tensor metadata ops | empty_tensor, view, as_strided | 大量临时 tensor 创建，host 时间被 metadata 操作占据 |
+| Python dispatch wrapper | aten::matmul, aten::dropout | 框架调度开销，设备 idle 但 host 在 Python 层忙碌 |
+| D→H sync ops | aten::item, aten::_local_scalar_dense | 每次调用 drain 整个 NPU pipeline，强制 host 等待 device |
+| ACL kernel launch | aclnnMm, aclnnRmsNorm | 逐算子下发，kernel 间存在 host dispatch 间隙 |
+| format/sync | format_cast, SynchronizeStream | 运行时格式转换或显式同步打断流水 |
 
 **特别注意 `.item()` 同步**：HuggingFace Trainer 的 gradient clipping 和 NaN detection 会在每步调用 `.item()`，每次强制 D→H 同步。在训练场景中这可能占据 >40% 的 host 时间。检查 `parse_operator_details --filter item` 或 `--filter _local_scalar` 确认。
 
@@ -26,9 +26,9 @@
 
 每段区段输出：起止时间、算子链、设备空闲占比、以及经 `async_npu(torch_to_npu)` flow 回连到 `cpu_op` 的 Call stack。直接定位到"哪段代码、哪个 forward 在 host 侧喂不动设备"。
 
-典型成因与方向：
-- 碎片化的 host 计算（大量小 op 串行 dispatch，如逐元素/广播类小算子链）→ 融合 / 图编译消除逐算子 dispatch
-- host 侧 Python 逻辑重（条件分支、循环里构造 tensor）→ 把逻辑下沉或预计算
+典型成因：
+- 碎片化的 host 计算（大量小 op 串行 dispatch，如逐元素/广播类小算子链）
+- host 侧 Python 逻辑重（条件分支、循环里构造 tensor）
 - 与 §3 Dispatch Latency 互补：§3 看全局下发延迟是否健康，§4 看具体哪段代码 host-bound
 
 ## 步骤 3：确认 bubble 是否真实
@@ -58,6 +58,4 @@ Decode 天然 host-bound——每 token 只有少量计算但需完整 dispatch�
 
 判断依据：`parse_kernel_details.py` 全局模式如果显示 avg kernel duration 极小（<20us）且 kernel 数极多 → decode 场景。
 
-此时 eager 模式下 dispatch 开销无法根本消除，需要：
-- fp16/bf16 启用融合算子（减少 kernel 数）
-- 图编译（消除逐算子 dispatch）
+此时 eager 模式下 dispatch 开销无法根本消除，根因是每步计算量太小而 dispatch 次数不减。

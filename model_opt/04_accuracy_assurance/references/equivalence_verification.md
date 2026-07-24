@@ -43,17 +43,16 @@ out_new = model_new(input)
 np.save("new_logits.npy", out_new.cpu().float().numpy())
 ```
 
-### 4. 指标判定
+### 4. 距离判定
 
-| 指标 | fp32 阈值 | fp16/bf16 阈值 | 含义 |
-|------|----------|---------------|------|
-| cosine similarity | >= 0.9999 | >= 0.999 | 整体方向一致性 |
-| max_abs_diff | < 1e-4 | < 1e-2 | 最大逐元素偏差 |
-| mean_abs_diff | < 1e-5 | < 1e-3 | 平均偏差 |
+按 [SKILL.md](../SKILL.md)「核心抽象」选择距离函数和阈值。推理等价性验证通常使用：
 
-**判定规则**:
-- cosine 和 max_abs_diff **同时满足**才通过
-- 任一不满足 → 不通过,需排查原因(见下方"不通过时的处理")
+- cosine similarity（方向一致性）
+- max_abs_diff（worst case 偏差）
+
+两者同时满足才通过。参考起点：fp32 cosine ≥ 0.9999 / max_abs < 1e-4；fp16/bf16 cosine ≥ 0.999 / max_abs < 1e-2。最终以项目自然波动基准为准。
+
+> 距离函数和阈值的完整选择方法论见 SKILL.md，此处不重复。
 
 ### 5. 确定性验证
 

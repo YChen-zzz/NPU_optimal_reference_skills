@@ -17,31 +17,31 @@ OOM 由**峰值**决定，不由累计分配量决定。峰值 = 某一时刻所
 
 可能原因：
 - 动态 shape 导致 allocator 不断申请新 segment
-- 解法：`PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`
+- 问题特征：Reserved 持续上升不回落
 
 ### 看到：高频抖动（>50MB 跳变多）
 
 可能原因：
 - 每次 forward 都 `torch.cat` / `torch.zeros` 创建大临时 tensor
-- 解法：预分配 buffer + `out=` 写入
+- 问题特征：反复分配释放同尺寸大块，allocator 池频繁伸缩
 
 ### 看到：Reserved - Allocated gap 大且增长
 
 可能原因：
 - 碎片化——池中有空闲但不满足新请求的连续大小
-- 解法：在大阶段切换点 `torch.npu.empty_cache()`，或启用 `expandable_segments`
+- 问题特征：Reserved - Allocated gap 随时间扩大
 
 ### 看到：短命大 tensor 量大（operator_memory）
 
 可能原因：
 - 中间计算结果每次重新分配又立即释放
-- 解法：预分配固定大小 buffer，forward 中复用
+- 问题特征：相同 shape 的 tensor 在 forward 中反复创建销毁
 
 ### 看到：重复同尺寸分配（operator_memory）
 
 可能原因：
 - 同一个 op 每次 forward 都分配相同大小的输出 tensor
-- 解法：预分配 + `torch.matmul(a, b, out=buffer)`
+- 问题特征：operator_memory 中同尺寸分配次数远大于 1
 
 ## 常见陷阱
 
@@ -63,7 +63,7 @@ cache['pair'] = None  # 必须显式置空
 
 **症状**：`parse_op_statistic` 中 ConcatD/MemSet 大量出现 + `parse_operator_memory` 中相同尺寸的 tensor 反复分配。
 
-**解法**：预分配 `(batch, heads, max_seq_len, dim)` buffer，每步只写入 `cache[:,:,step:step+1,:] = new_kv`。
+**问题特征**：每步每层都产生一次 alloc+copy，累计开销显著。
 
 ### 同时持有两份权重
 
