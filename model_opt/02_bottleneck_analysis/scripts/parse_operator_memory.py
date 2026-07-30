@@ -78,7 +78,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20,
             short_lived_large.append((size_kb, duration_us, name))
 
         # Short-lived by ACTIVE duration (true referenced time, not pool lifetime).
-        # Caching allocator retains freed tensors in pool → Duration can be long
+        # Caching allocator retains freed tensors in pool - Duration can be long
         # while Active is short. Use Active to catch reuse candidates the pool
         # Duration would mark "long-lived" and miss.
         active_dur = safe_float(row.get("Active Duration(us)", 0))
@@ -184,7 +184,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20,
         lines.append("  - [DEFINITE] Repeated same-size allocations (buffer reuse opportunity):")
         for key, count in repeated[:8]:
             name_part, size_part = key.rsplit("|", 1)
-            lines.append(f"    {name_part}: {size_part}KB × {count} times")
+            lines.append(f"    {name_part}: {size_part}KB x {count} times")
         suspects_found = True
 
     if short_lived_large:
@@ -233,16 +233,16 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20,
 
     if projected_peak_mb / hbm_mb > PARALLELISM_RATIO:
         lines.append(f"  [SIGNAL] Projected peak ({projected_peak_mb/hbm_mb*100:.0f}% HBM) exceeds {PARALLELISM_RATIO*100:.0f}% after waste elimination.")
-        lines.append("    → Parallelism may be required. Source code analysis needed:")
+        lines.append("    - Parallelism may be required. Source code analysis needed:")
         lines.append("      1. Read parallel_design.md for splitting principles")
         lines.append("      2. Use operator_details Call Stack to locate large tensors in source code")
         lines.append("      3. Identify shardable dimensions from computation structure")
         lines.append("      4. Re-profile after splitting to verify")
-        lines.append("    → Profiling only triggers; source code determines the splitting strategy.")
+        lines.append("    - Profiling only triggers; source code determines the splitting strategy.")
     elif waste_at_peak_mb > 0:
         lines.append(f"  [DEFINITE] Waste at peak = {waste_at_peak_mb:,.0f}MB. "
                      f"Projected peak after elimination: {projected_peak_mb/hbm_mb*100:.0f}% HBM — within single-card capacity.")
-        lines.append("    → Parallelism not required. Prioritize memory optimization (eliminate/reuse).")
+        lines.append("    - Parallelism not required. Prioritize memory optimization (eliminate/reuse).")
     else:
         lines.append("  No large short-lived tensors at peak. Memory is not a parallelism trigger.")
     lines.append("")

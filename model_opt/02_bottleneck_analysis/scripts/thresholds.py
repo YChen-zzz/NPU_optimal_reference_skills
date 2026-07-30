@@ -107,7 +107,7 @@ THRESHOLDS = {
         # these patterns are framework defaults, adjust per model/framework. Order
         # matters: first match wins (sync > dispatch > copy > alloc > framework > compile).
         "host_category_rules": {
-            "sync (D→H)": ["_local_scalar", "::item", ".item", "numpy"],
+            "sync (D-to-H)": ["_local_scalar", "::item", ".item", "numpy"],
             "dispatch (aclnn launch)": ["aclnn"],
             "H2D/D2H copy": ["copy_", "_to_copy", "to_copy", "memcpy", "::to"],
             "alloc/metadata": ["empty", "as_strided", "view", "reshape", "clone",

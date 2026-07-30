@@ -64,7 +64,7 @@ print("torchair 版本:", torchair.__version__)
 
 | 变量名 | 作用 | 示例值 | 说明 |
 |---|---|---|---|
-| `TASK_QUEUE_ENABLE` | Host-Device 异步流水 | `2` | 消除逐算子同步等待，是所有 eager 优化的前提 |
+| `TASK_QUEUE_ENABLE` | Host-Device 异步流水 | `2` | 消除逐算子同步等待 |
 | `CPU_AFFINITY_CONF` | CPU 绑核 | `1` | 减少调度抖动，使采集数据稳定可复现 |
 | `LD_PRELOAD` | 高性能 malloc | `libjemalloc.so` 或 `libtcmalloc.so` | 减少 Python 内存分配开销（`empty_tensor` 高频场景显著） |
 | `PYTORCH_NPU_ALLOC_CONF` | NPU 内存池策略 | `expandable_segments:True` | 减少 NPU 内存碎片，降低 allocator 同步阻塞 |

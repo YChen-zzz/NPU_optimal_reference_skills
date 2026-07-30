@@ -77,7 +77,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
             lines.append("")
             lines.append(f"  Tiling subtotal: {tiling_us/1000:.1f} ms ({tiling_us/total_time*100:.1f}% of all API time)")
             if tiling_us / total_time > 0.3:
-                lines.append("  → Tiling dominates ACL API time. If shapes are static/repeated, tiling is re-computed per call — cache it (graph compile / op cache).")
+                lines.append("  - Tiling dominates ACL API time. If shapes are static/repeated, tiling is re-computed per call — cache it (graph compile / op cache).")
         lines.append("")
 
     # node launch (count should match trace_view Node@launch)
@@ -120,10 +120,10 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
                 lines.append(f"  {c:<16} {u/1000:>9.1f} ms ({u/total_time*100 if total_time>0 else 0:>5.1f}%)")
             if dom_pct > 20:
                 hint = {
-                    "memory mgmt": "→ Memory mgmt dominates ACL API time (Free/Malloc/Unmap). High churn = frequent alloc/free; cross-validate operator_memory repeated allocs → buffer reuse.",
-                    "stream/device sync": "→ Sync dominates ACL API time (SynchronizeStream/Device). Explicit syncs or .item() forcing D→H; cross-validate operator_details sync category.",
-                    "tiling": "→ Tiling dominates; cache tiling for static/repeated shapes (graph compile / op cache).",
-                    "launch": "→ Launch overhead; reduce op count (fusion / graph compile).",
+                    "memory mgmt": "- Memory mgmt dominates ACL API time (Free/Malloc/Unmap). High churn = frequent alloc/free; cross-validate operator_memory repeated allocs - buffer reuse.",
+                    "stream/device sync": "- Sync dominates ACL API time (SynchronizeStream/Device). Explicit syncs or .item() forcing D-H; cross-validate operator_details sync category.",
+                    "tiling": "- Tiling dominates; cache tiling for static/repeated shapes (graph compile / op cache).",
+                    "launch": "- Launch overhead; reduce op count (fusion / graph compile).",
                 }.get(dom_cat, "")
                 if hint:
                     lines.append(f"  [SIGNAL] {hint}")

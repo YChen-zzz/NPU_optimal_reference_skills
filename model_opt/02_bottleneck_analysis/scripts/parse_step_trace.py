@@ -65,14 +65,14 @@ def parse(profiling_dir: str, rank=None) -> str:
             lines.append("  ** Moderate Host-Bound: device idle >50%, significant host-side overhead **")
         else:
             lines.append(f"  Bottleneck is on device side (utilization {util:.0f}%)")
-            lines.append(f"  → Need kernel-level analysis to distinguish compute-bound vs memory-bound")
+            lines.append(f"  - Need kernel-level analysis to distinguish compute-bound vs memory-bound")
         lines.append("")
 
         optimizable = free_total / grand_total * 100 if grand_total > 0 else 0
         lines.append(f"  Theoretical limit (= Computing): {computing_total/1000:.1f} ms")
         lines.append(f"  Optimizable space: {optimizable:.1f}% ((Total - Computing) / Total)")
         if optimizable > threshold("step_trace", "large_optimizable_space", 30):
-            lines.append(f"  → Large optimizable space. Non-compute overhead (dispatch/alloc/sync) is significant; rank candidates by this ceiling, not implementation difficulty")
+            lines.append(f"  - Large optimizable space. Non-compute overhead (dispatch/alloc/sync) is significant; rank candidates by this ceiling, not implementation difficulty")
         lines.append("")
 
         # Optimization ceilings (C4, Amdahl-style from this step's time split)
@@ -82,12 +82,12 @@ def parse(profiling_dir: str, rank=None) -> str:
         if comm_total > 0:
             lines.append(f"  Communication ceiling (overlap/eliminate): {comm_total/1000:.1f} ms ({comm_total/grand_total*100:.1f}%)")
         if free_total >= comm_total and free_total > 0:
-            lines.append(f"  → Largest ceiling = host/dispatch (Free). Prioritize host-side fixes first.")
+            lines.append(f"  - Largest ceiling = host/dispatch (Free). Prioritize host-side fixes first.")
         elif comm_total > 0:
-            lines.append(f"  → Largest ceiling = communication. Prioritize comm-compute overlap / comm reduction.")
+            lines.append(f"  - Largest ceiling = communication. Prioritize comm-compute overlap / comm reduction.")
         lines.append("  Sub-category ceilings (finer breakdown):")
-        lines.append("    sync vs alloc vs dispatch → operator_details §Host Time by Category")
-        lines.append("    fusible small-op savings  → kernel_details §Fusible sequences")
+        lines.append("    sync vs alloc vs dispatch - operator_details section Host Time by Category")
+        lines.append("    fusible small-op savings  - kernel_details section Fusible sequences")
         lines.append("")
 
     if len(step_data) > 1:

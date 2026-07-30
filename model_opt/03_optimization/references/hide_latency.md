@@ -66,10 +66,6 @@ output = use_both(compute_result, gathered)
 
 当获取时间 ≈ 计算时间时，加速比接近 2×。
 
-### 适用场景
-
-- Ring 通信：P 轮 broadcast + einsum → 双 buffer 让通信和计算重叠
-- 分块加载：从 HBM 读取大数据分块 → 一块在计算另一块在传输
 
 ## 前置分配与计算流水重叠
 
@@ -87,12 +83,92 @@ part2 = compute_B(...)                 # 与上面的 copy_ 流水重叠
 out.narrow(-1, d1, d2).copy_(part2)    # 两部分都就绪
 ```
 
-## 图编译的掩盖本质
+## 图编译（掩盖的极端形态）
 
-图编译将多个算子合成一个子图，设备侧一次性调度执行。从"掩盖"角度理解：逐算子 dispatch 时每个 kernel 之间有 host 调度的间隙（延迟），编译后这些间隙被设备内部流水线掩盖——设备不再等待 host 逐个下发。
+图编译将多个算子合成一个子图，设备侧一次性调度执行——逐算子 dispatch 时每个 kernel 间有 host 调度间隙，编译后这些间隙被设备内部流水线掩盖。是 host-bound 场景的终极手段。
+
+### 前置条件检查
+
+```python
+# 方式 1: torchair (NPU 专用, 不依赖 triton, 优先级最高)
+try:
+    import torchair
+    print(f"torchair 可用: {torchair.__version__}")
+except ImportError:
+    print("torchair 不可用")
+
+# 方式 2: torch.compile (依赖 triton)
+try:
+    import triton
+    print("triton 可用, torch.compile 可用")
+except ImportError:
+    print("triton 不可用, torch.compile 不可用")
+
+# 方式 3: NPU JIT 编译 (不需要 triton, 但可能触发 tiling error)
+import torch_npu
+torch.npu.set_compile_mode(jit_compile=True)
+```
+
+> 若都不可用，回退 eager 模式，通过减少 kernel 数量（融合算子、flat forward）缓解 host-bound。
+
+### torch.compile
+
+```python
+compiled_layer = torch.compile(model.encoder.layers[0], mode="reduce-overhead")
+
+# 验证精度
+with torch.no_grad():
+    original_output = model.encoder.layers[0](x)
+    compiled_output = compiled_layer(x)
+    cos = torch.cosine_similarity(original_output.flatten(), compiled_output.flatten(), dim=0)
+    assert cos > 0.999, f"精度不达标: {cos}"
+```
+
+| 模式 | 适用场景 | 注意 |
+|------|---------|------|
+| `reduce-overhead` | 形状固定、Host 调度开销显著 | 使用 ACLGraph，消除 Python dispatch |
+| `max-autotune` | 可接受较长编译时间，追求极致吞吐 | 使用 GE 后端，会尝试 kernel 自动调优 |
+| `default` | 通用 | 仅做图捕获，不做激进的调度优化 |
+
+**编译范围策略**：挑"碎而密"的地方编，不挑"大而炸"的地方编。
+- 从纯计算子模块开始（如单层 Transformer Block）逐渐扩大范围
+- 形状固定的子图（encode 路径，非自回归 decode）
+- 不要直接 `torch.compile(model)`——控制流、side-effect 会切图
+- 含动态 shape 的循环（每步 shape 变化导致反复重编译）
+
+### torchair
+
+torchair 是昇腾专用图编译工具，不依赖 triton，对 NPU 兼容性更好。
+
+```python
+import torchair
+config = torchair.CompilerConfig()
+config.experimental_config.frozen_parameter = True  # 推理时冻结参数
+compiled_model = torchair.compile(model, config=config)
+```
+
+> torchair 的具体 API 随版本变化，使用前查阅对应版本的[官方文档](https://www.hiascend.com/document/detail/zh/Pytorch/700/configandinstg/instg/insg_0001.html)。
+
+### 放弃条件
+
+满足任一即回退 eager：
+- 算子不兼容（编译报错且无法绕过）
+- 图太大导致编译期 OOM
+- 触发框架 bug（如 tiling error、段错误）
+- 精度不达标（cosine < 0.999）且无法通过调整编译选项修复
+- 编译时间过长（> 30 分钟）且无法缓存
+
+> 回退后记录失败原因到 evidence_db。图编译后不需要 `TASK_QUEUE_ENABLE`（图模式下没有逐算子 dispatch）。
 
 ## Host-Device 异步流水（TASK_QUEUE_ENABLE）
 
-将部分算子适配工作从 Host 侧迁移至 Device 侧，使 Host 下发和 Device 执行在时间上重叠。训练场景（大量密集算子下发）收益显著。
+将部分算子适配工作从 Host 侧迁移至 Device 侧，使 Host 下发和 Device 执行在时间上重叠。
 
-详细配置见 [training_tuning.md](training_tuning.md)。
+```bash
+export TASK_QUEUE_ENABLE=2
+```
+
+注意事项：
+- `ASCEND_LAUNCH_BLOCKING=1` 时 task_queue 关闭，不生效
+- `TASK_QUEUE_ENABLE=2` 可能导致 NPU 内存峰值上升，遇 OOM 可回退到 `=1`
+- 推理场景下建议先单独测试，确认有正向收益后再保留

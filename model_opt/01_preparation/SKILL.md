@@ -5,8 +5,6 @@ description: NPU 适配前期准备：代码理解、CANN 环境搭建、测试�
 
 # NPU 适配前期准备
 
-详见 [environment_reference.md](references/environment_reference.md) 获取详细的 CANN 环境配置参考。
-
 ---
 
 ## 一、模型代码理解
@@ -14,26 +12,7 @@ description: NPU 适配前期准备：代码理解、CANN 环境搭建、测试�
 **目标**：在动手适配前，摸清推理路径，避免在错误位置改代码。
 
 ### 系统性探索顺序
-```bash
-# 1. 看全局结构
-find . -name "*.py" | head -60
-
-# 2. 看包入口，确认对外暴露了什么
-cat src/<package>/__init__.py
-
-# 3. 定位模型类定义（通常含 forward / __call__）
-grep -rn "class.*Model\|class.*Encoder\|class.*Decoder" src/ --include="*.py"
-
-# 4. 定位推理入口（脚本 / CLI / pipeline）
-grep -rn "def main\|if __name__" *.py scripts/*.py
-```
-
-### 从 config.json 快速确认架构
-```python
-import json
-cfg = json.load(open("config.json"))
-# 关注：d_model / hidden_size, num_layers, num_heads, vocab_size, model_type
-```
+从全局到局部：包入口（`__init__.py`）→ 模型类定义（含 forward）→ 推理入口（main/CLI/pipeline）。关注 config.json 中的架构参数（hidden_size, num_layers, num_heads 等）。
 
 ### 已有文档阅读
 - 阅读项目中的Readme、设计文档等
@@ -46,6 +25,8 @@ cfg = json.load(open("config.json"))
 ---
 
 ## 二、环境准备
+
+完整的环境变量清单（含性能优化变量和 Python 级设置）见 [environment_reference.md](references/environment_reference.md)「环境变量配置清单」。
 
 ### CANN 环境诊断
 ```bash
@@ -133,21 +114,7 @@ median_idx = np.argsort(lengths)[len(lengths) // 2]
 └── latest -> YYYYMMDD_HHMMSS  # 软链接指向最新一次
 ```
 
-**路径构造模板**：
-```python
-import os, datetime
-
-PROFILING_BASE = os.path.join(os.getcwd(), "profiling")
-timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-profiling_dir = os.path.join(PROFILING_BASE, timestamp)
-os.makedirs(profiling_dir, exist_ok=True)
-
-# 更新 latest 软链接
-latest_link = os.path.join(PROFILING_BASE, "latest")
-if os.path.islink(latest_link):
-    os.remove(latest_link)
-os.symlink(timestamp, latest_link)
-```
+**路径构造模板**见 [profiling_collection.md](references/profiling_collection.md) §0。
 
 **强制规则**：
 - `tensorboard_trace_handler` 的路径参数必须指向 `<workspace>/profiling/<timestamp>/`
@@ -155,24 +122,19 @@ os.symlink(timestamp, latest_link)
 - 每次采集后更新 `latest` 软链接，方便用户直接查看最新结果
 - `profiling/` 目录已在 `.gitignore` 中排除（详见 05_engineering）
 
-### 采集级别选择
+### 采集级别
 
-三个采集级别对应全流程中不同的用途，按迭代节奏区分：
-
-| 级别 | 内容 | 数据量 | 使用时机 |
-|------|------|--------|----------|
-| **L0** | 仅采集 NPU 活动，最小膨胀 | 小 | **性能判定基线**：项目最开始采集一次作为 baseline；每个优化阶段（profiling 分析 + 优化 + 精度确认的完整流程）结束后再采集一次，与 baseline/上一轮快速比对，判定本轮收益 |
-| **L1** | CPU + NPU + 算子详情 + 调用栈 + 内存 + AI Core 指标 + CANN 运行时 API 统计（覆盖全部 8 个解析脚本） | 大 | **优化分析主力**：每个优化阶段开始前采集一次，交给 Phase 2 瓶颈分析模块处理，定位优化点 |
-| **L2** | L1 基础上增加 CANN Runtime/GE 数据 + AI CPU 数据（`data_preprocess.csv`） | 更大 | **深度下探**：与 L1 用在同一阶段（阶段开始前），仅当 L1 信息不足以定位优化点时才启用，用于排查 Runtime 底层调度开销或算子 fallback 到 AI CPU |
-
-> **快速比对用 L0，优化分析用 L1，L1 不够再上 L2。** L0 因不注入 CPU 侧 barrier，Host/Device 比例更接近真实，适合作稳定的收益判定基线；L1/L2 数据量大、含 profiler 注入开销，仅在需要定位优化点时采集。
+| 级别 | 内容 | 数据量 |
+|------|------|--------|
+| **L0** | 仅采集 NPU 活动，最小膨胀 | 小 |
+| **L1** | CPU + NPU + 算子详情 + 调用栈 + 内存 + AI Core 指标 + CANN 运行时 API 统计（覆盖全部 8 个解析脚本） | 大 |
 
 ### 采集流程
 
 ```
 0. 环境校验（运行本 skill 的 scripts/validate_profiling_env.py）
 → 1. 确定采集场景（训练 / 推理）
-→ 2. 选择采集级别（基线判定 L0 / 优化分析 L1 / 深度下探 L2）
+→ 2. 选择采集级别（L0 /  L1 ）
 → 3. 植入 Profiling 代码（按框架选择模板）
 → 4. 设置环境变量（TASK_QUEUE_ENABLE, CPU_AFFINITY_CONF）
 → 5. 执行采集，产出 trace 文件
@@ -187,22 +149,20 @@ export TASK_QUEUE_ENABLE=2    # Host-Device 异步流水，获得接近生产环
 export CPU_AFFINITY_CONF=1    # CPU 绑核，减少调度抖动，使采集数据稳定可复现
 ```
 
-> 完整的环境变量清单（含性能优化变量和 Python 级设置）见 [environment_reference.md](references/environment_reference.md)「环境变量配置清单」。
-
 ### 重要默认行为
 
 1. **不要修改业务代码中的 CUDA 写法**：通过 `import torch_npu` + `transfer_to_npu`，业务代码中的 `.cuda()` 会自动转为 NPU 调用。Profiling 代码使用 `torch_npu.profiler` 是必要的，但业务脚本保持原样。
-2. **多推理路径分离采集**：不同推理模式（encoder-only / generate / scoring）应分别建立独立 profiling 段，不混合采集。
+2. **多推理路径分离采集**：不同推理模式（例如LLM中的prefill/decode, 蛋白质结构预测中的generate/scoring等）应分别建立独立 profiling 段，不混合采集。
 3. **GPU/NPU 对称采集**：当需要跨平台对比时，在 GPU 上使用相同 schedule 配置 + `torch.profiler.ProfilerActivity.CUDA`。
 
 ### 框架适配指引
 
 | 训练框架 | 接入方式 | 模板位置 |
 |---------|---------|----------|
-| 原生 PyTorch 循环 | `with torch_npu.profiler.profile(...) as prof` | profiling_collection.md §1 |
-| PyTorch Lightning | 自定义 Callback | profiling_collection.md §2.1 |
-| HuggingFace Trainer | 自定义 TrainerCallback | profiling_collection.md §2.2 |
-| DeepSpeed | 全卡采集，按 rank 分目录 | profiling_collection.md §2.3 |
+| 原生 PyTorch 循环 | `with torch_npu.profiler.profile(...) as prof` | [profiling_collection.md](references/profiling_collection.md) §1 |
+| PyTorch Lightning | 自定义 Callback | [profiling_collection.md](references/profiling_collection.md) §2.1 |
+| HuggingFace Trainer | 自定义 TrainerCallback | [profiling_collection.md](references/profiling_collection.md) §2.2 |
+| DeepSpeed | 全卡采集，按 rank 分目录 | [profiling_collection.md](references/profiling_collection.md) §2.3 |
 
 ### 环境预检
 
@@ -246,4 +206,3 @@ with open(f"baseline/{sample_id}_tokens.json", "w") as f:
 ### 确定性验证
 
 优化前的 baseline 采集和优化后的输出采集，必须在相同的确定性条件下进行。推理场景：`model.eval()` + `torch.no_grad()` + 固定输入 + 关闭随机性。详见 [04_accuracy_assurance/SKILL.md](../04_accuracy_assurance/SKILL.md)「确定性保证」。
-

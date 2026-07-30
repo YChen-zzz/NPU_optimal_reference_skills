@@ -66,7 +66,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
     top3_ratio = top3_us / total_us * 100 if total_us > 0 else 0
     lines.append(f"- [DEFINITE] Top-3 concentration: {top3_ratio:.1f}% of total device time")
     if top3_ratio > threshold("op_statistic", "top3_concentration", 80):
-        lines.append(f"  → Bottleneck highly concentrated — optimizing top ops has strong leverage")
+        lines.append(f"  - Bottleneck highly concentrated — optimizing top ops has strong leverage")
 
     # 2. Data movement overhead (non-compute ops)
     move_keywords = tuple(threshold("op_statistic", "move_keywords",
@@ -80,7 +80,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
                     and r["_total_us"] > 0]
         lines.append(f"- [SIGNAL] Data movement overhead: {move_ratio:.1f}% ({move_us/1000:.1f}ms)")
         lines.append(f"  ops: {', '.join(move_ops[:8])}")
-        lines.append(f"  → Layout/format conversion cost. Cross-validate: kernel_details for mte dominance, operator_details for source location")
+        lines.append(f"  - Layout/format conversion cost. Cross-validate: kernel_details for mte dominance, operator_details for source location")
 
     # 3. High-count low-avg ops (fragmentation signal)
     if total_count > 0:

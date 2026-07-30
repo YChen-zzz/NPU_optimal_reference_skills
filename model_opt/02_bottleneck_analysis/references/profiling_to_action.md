@@ -1,14 +1,15 @@
-# Line B 分析路线
+# Line B 分析路线：从现象到源码根因
 
-> 方法论脊柱：**现象 → 归因**。
+> 方法论脊柱：**现象 → 归因 → 源码定位**。
+
 ## 方法论脊柱
-
-把"观察到什么"推到"属于哪类浪费"：
 
 ```
 现象层  观察到什么（表象 + 瓶颈类型）
   ↓ 为什么慢 / 属于哪类开销
 归因层  属于哪类浪费（识别信号 + 量化上限）
+  ↓ 哪行源码导致的
+源码层  源码中的具体位置 + 根因分析
 ```
 
 定位到根因后，产出候选清单（问题 + 位置 + 影响范围），进入 ★A 用户确认。优化维度选择和手段设计是 Phase 3 的工作。
@@ -40,61 +41,62 @@
 9. **小算子碎片**——大量短 kernel 串行。信号：短 kernel 占比高、kernel 数极多。上限：碎片段累计耗时。
 10. **延迟未掩盖**——存在可并行的独立工作但未重叠。信号：device idle 但有可并行计算、多流并发占比低。上限：可掩盖的 idle/延迟。
 
-> 归因用五种分析模式推理（见后文），不套固定 pattern。多类浪费并存时各自量化上限，按上限排序。
 
-## 收益排序（横切操作）
+## 分析模式（推理方法）
 
-多类浪费并存时，按归因层的**量化上限降序**排候选——上限是该类浪费占总时间的比例。`parse_step_trace` 的可优化空间是总上限，各归因类别的开销占比是单项上限。
+归因层推理用的思维工具。脚本给数据和疑点，从疑点到决策需要推理——不是套固定 pattern，而是用以下两种模式自行构造。
 
-- 主排序：按上限降序（数据驱动，非固定全局序；随瓶颈类型变——Host-Bound 时 host 侧类别靠前，Compute-Bound 时 compute 饱和到最前）。
-- 次级筛选（决定本轮是否实施，不进主排序）：单点零风险→直接做；根因级需验证→微基准先行；高风险→子分支探索；终局（compute 饱和且可优化空间<10%）→判定无空间即止。
-
-## 五种分析模式（推理方法）
-
-归因层推理用的思维工具。脚本给数据和疑点，从疑点到决策需要推理——不是套固定 pattern，而是用以下五种模式自行构造。
+> 脚本已自动完成异常定位（Top-N 排序、DEFINITE/SIGNAL 信号、Suspect Kernels），agent 直接以脚本输出的显著信号为起点，不需要自行"找离群"。
 
 ### 模式 1：横向关联（广度结合）
-同一问题从多个文件/维度交叉验证收敛。目的：消除单信号歧义，多来源指向同方向才可信。何时用：单脚本判断模糊（如利用率 50% 难判 host/device）、需排除 profiler 自身开销假象时。关键：真问题会在多维度同时留痕。
 
-### 模式 2：纵向深入（沿一个点逐层钻入）
-从高层信号层层钻到源码行级根因。典型路径：op_statistic（哪类算子最耗时）→ kernel_details --filter（为什么慢）→ operator_details --filter（谁触发）→ 源码（为什么这样写）。关键：不跳层，先确认"确实是这个算子的问题"再深入。
+同一问题从多个文件/维度交叉验证收敛。目的：消除单信号歧义，多来源指向同方向才可信。何时用：单脚本判断模糊（如利用率 50% 难判 host/device）、L0 vs L1 交叉验证（分离 profiler 注入开销）、跨平台对比（GPU vs NPU 定位差距环节）时。关键：真问题会在多维度同时留痕。
 
-定位到源码后，沿调用链双向追溯：
+### 模式 2：纵向深入（沿一个点逐层钻入到源码）
 
-- **向上追溯**（谁调用了它）：这个函数被哪个循环/模块调用？循环次数和 profiling 中的算子 count 是否一致？是框架代码在调用（如 `Module.__call__` → `forward`）还是项目代码直接调用？调用频次异常时，向上找是哪层循环/递归导致的。
-- **向下深入**（它内部做了什么）：函数内部的控制流有没有推理时走了不必要的路径（如 `if training` / `if self.use_cache`）？每次调用是否都重新分配 tensor？是否有 `.contiguous()` / `.transpose()` / `.to()` 触发了物理拷贝？
+从高层信号层层钻到源码行级根因，是定位瓶颈的主线模式。典型路径：op_statistic（哪类算子最耗时）→ kernel_details --filter（为什么慢）→ operator_details --filter（谁触发）→ 源码（为什么这样写）。关键：不跳层，先确认"确实是这个算子的问题"再深入。Call Stack 断桥（"(no stack)"）时，用 Input Shapes 反推计算语义，或切换到 Line A 穿透框架层。
 
-### 模式 3：差异对比（两个状态的 delta）
-看变化量而非绝对值。适用：优化前后（确认收益）、L0 vs L1（分离 profiler 注入开销）、GPU vs NPU（定位差距环节）。关键：只允许一个变量不同。
+模式 1 是模式 2 的补充——当模式 2 单线钻入的结论有歧义时，用模式 1 从其他维度交叉验证。简单问题模式 2 即可定位，复杂问题在 1↔2 间反复。
 
-### 模式 4：异常定位（分布中找离群）
-看分布找显著偏离的少数点。关键：离群=线索≠结论，需模式 2/1 确认。脚本的 Suspect Kernels、Top Stalls、dispatch top-N 本质都是异常定位。
+## 源码定位:
 
-### 模式 5：时序因果（时间轴前后关系）
-用事件时间顺序推断因果——A 总紧挨 B 之前 → A 可能导致/阻塞 B。何时用：知道"哪里慢"不知"为什么"、需区分"host 喂不动"还是"device 等同步"时。
+> 归因层确定了"属于哪类浪费"后，需要从 profiling 数据跨接到源码具体位置——这是方法论脊柱的第三层（源码层）。
 
-**协作顺序**（典型，非固定）：异常定位圈定嫌疑 → 纵向深入钻到候选根因 → 横向关联交叉验证 → 时序因果确认因果方向 → 差异对比确认收益。简单问题 1→2 即定位，复杂问题在 2↔3 反复。
+Profiling 只能告诉你"哪个算子慢"，要动手优化必须先把它跨接到"源码里哪一行/哪个模块"。这一跨接依赖 profiling 文件里几个特定字段作为"桥"。
 
-## 工具映射（可替换层）
+> 前提：这些桥全部依赖采集参数正确。若采集缺失对应开关，字段不会生成，桥即断裂——此时不能假装能精确定位，只能按降级路径做有限推断。采集参数见 [profiling_collection.md](../../01_preparation/references/profiling_collection.md) §1。
 
-方法论里的每个"信号/上限"由哪个脚本/字段回答。本层可替换——脚本改 section 不影响方法论正文。
+### 桥接工具
 
-| 归因类别 | 识别信号来源 | 量化上限来源 |
-|---|---|---|
-| 显式同步 | operator_details Host Time by Category(sync) + api_statistic(sync) | sync 类 host 时间占比 |
-| dispatch 调度 | operator_details Host Time by Category(dispatch) + trace_view dispatch latency | dispatch 类 host 时间 / dispatch-kernel ratio |
-| 内存管理阻塞 | api_statistic(memory-mgmt) + operator_memory 重复分配 + trace_view idle 成因 | memory-mgmt 类 host 时间占比 |
-| 在线编译 | trace_view Suspect 编译分类(A/B) + api_statistic(compile) | 编译时间占比 |
-| 内存带宽受限 | kernel_details mte/mac + trace_view counter HBM 带宽 | 带宽受限段 device 时间 |
-| compute 饱和 | kernel_details 真 compute-bound + step_trace 可优化空间 | kernel 群 device 时间 |
-| 布局转换 | kernel_details 非 ND 格式 + op_statistic data movement | 搬运类耗时占比 |
-| 通信同步 | communication Wait% + step_trace 通信占比 | 通信等待时间 |
-| 小算子碎片 | kernel_details fusible + short kernel ratio | 碎片段累计耗时 |
-| 延迟未掩盖 | trace_view stream concurrency + idle 成因 | 可掩盖 idle/延迟 |
+| 桥 | 字段 / 文件 | 采集前提 | 作用 |
+|----|------------|---------|------|
+| **Call Stack** | `operator_details.csv` 的 `Call Stack` 列 | `activities` 含 CPU + `with_stack=True` | 唯一能把一次算子调用映射到 Python 源码函数/行号的字段 |
+| **Input Shapes** | `kernel_details.csv` / `operator_details.csv` 的 `Input Shapes` 列 | `record_shapes=True` | 区分同一算子类型的不同调用点；Call Stack 断桥时，可从 shapes 反推计算语义（如 one-hot 向量 × 权重 = gather） |
+| **下发时序** | `trace_view.json` 的 HostToDevice flow、`Node@launch` 的 `connection_id`、`async_npu(torch_to_npu)` flow、`AscendCL@opCompile` 事件（`parse_trace_view.py`） | NPU 采集即有；Python 调用栈/源码映射需 `with_stack=True` | host→device 下发链与在线编译停顿（A 预热 / B 每步）。`async_npu` flow 本身携带 `cpu_op` 的 Call Stack，因此下发时序是包含 Call Stack + host-device 时序关系的 richer 数据源——适合 host-device 交互类问题（如设备空等、下发延迟），而非"某个慢算子"类问题。**NPU 推理场景注意**：异步流水线（TASK_QUEUE_ENABLE=2）下 host-device 时序 gap 可能是 profiler 伪影，需先用 L0 交叉验证确认 gap 真实性再做因果推断 |
+
+### 定位路径
+
+定位的入口取决于问题类型：
+
+**设备侧问题**（某算子慢/开销高）：脚本信号（op_statistic / kernel_details 发现异常算子）→ `--filter` 获取该算子的 Call Stack（来自 `operator_details.csv`）→ Call Stack 有源码信息？
+
+- **有源码**（正常情况）：直接定位到函数/行号。如需区分同一算子类型的多个调用点，再用 Input Shapes 确认是哪种 shape。产出候选。
+- **"(no stack)"**（框架动态生成的算子，如 JIT/e3nn codegen/opt_einsum_fx）：用 **Input Shapes** 反推计算语义（如 `(72,1)×(72,1)` = one-hot 向量 × 权重 = gather），推断出操作的实际含义后，切换到 **Line A 穿透框架层**：沿算子类型 → 框架入口 → 代码生成逻辑 → 生成出的算子序列，追溯该算子是哪段框架代码生成的。结论标注为"Line A 推断"。详见 [proactive_source_analysis.md](proactive_source_analysis.md)
+
+**host-device 交互问题**（设备空闲 / 下发延迟 / 在线编译停顿）：
+- 信号来源：step_trace（Free 大 / 利用率低）、trace_view（Host2Device Bound Regions、idle 成因分解）
+- 入口：直接用**下发时序**（来自 `trace_view.json`，经 `parse_trace_view.py` 解析）。`async_npu` flow 本身携带 host 操作的 Call Stack——下发时序同时提供"哪个 host 操作在下发"和"设备在等什么"
+- `connection_id` 配对 `Node@launch`↔设备算子，定位"设备空等 host"的时间区段和对应的 host 操作 → 从该 host 操作的 Call Stack 定位源码
+- **Call Stack 断桥**（host 操作也无 "(no stack)"）：同设备侧路径，用 Input Shapes 反推或切换 Line A 穿透框架层
+- **NPU 推理场景注意**：需先用 L0 交叉验证确认 host-device gap 非 profiler 伪影
+
+例：`op_statistic` 发现 Transpose 占 15% → `operator_details --filter Transpose` 用 **Call Stack** 定位到源码行 → `kernel_details --filter Transpose` 用 **Input Shapes** 确认是哪种 shape → 产出候选（问题 + 位置 + 影响范围）。
+
+---
 
 ## 脚本信息不够时的深入方法
 
-当脚本输出不足时直接读原始文件：
+当脚本输出不足或桥梁断裂时，直接读原始文件：
 
 | 想了解什么 | 去哪里 | 看什么 |
 |---|---|---|

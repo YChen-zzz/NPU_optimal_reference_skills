@@ -127,7 +127,7 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     lines.append("  " + "-" * (len(header) - 2))
     for name, info in op_sorted_host[:top_k]:
         ratio = info["host_us"] / info["device_us"] if info["device_us"] > 0 else float('inf')
-        ratio_str = f"{ratio:.1f}x" if ratio < 10000 else "∞"
+        ratio_str = f"{ratio:.1f}x" if ratio < 10000 else "inf"
         lines.append(
             f"  {name:<35} {info['count']:>8} "
             f"{info['host_us']/1000:>10.1f} {info['device_us']/1000:>10.1f} "
@@ -156,14 +156,14 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     # sync vs dispatch vs alloc have opposite fixes; decompose to set direction.
     if total_host_us > 0 and cat_agg:
         lines.append("## Host Time by Category")
-        lines.append("  Decomposes total host Self time by op category — drives optimization direction.")
+        lines.append("  Decomposes total host Self time by op category - drives optimization direction.")
         lines.append(f"  (total host self = {total_host_us/1000:.1f} ms)")
         for cat, us in sorted(cat_agg.items(), key=lambda x: -x[1]):
             pct = us / total_host_us * 100
             lines.append(f"  {cat:<24} {us/1000:>9.1f} ms  ({pct:>5.1f}%)")
         sync_us = sum(v for k, v in cat_agg.items() if k.startswith("sync"))
         if sync_us / total_host_us > 0.2:
-            lines.append(f"  → sync (D→H) dominates ({sync_us/total_host_us*100:.0f}%): eliminate .item()/.numpy(), cache/delay syncs")
+            lines.append(f"  - sync (D-H) dominates ({sync_us/total_host_us*100:.0f}%): eliminate .item()/.numpy(), cache/delay syncs")
         lines.append("")
 
     # --- Layer attribution (B4/C6) ---
@@ -171,7 +171,7 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
     # layer attribution gate (any layer >10% host time needs a candidate).
     if layer_agg:
         lines.append("## Host Time by Call-Chain Layer (inclusive Host Total)")
-        lines.append("  Per-layer inclusive host cost (Host Total, self+children). Line A gate: layer >10% of total → must have candidate.")
+        lines.append("  Per-layer inclusive host cost (Host Total, self+children). Line A gate: layer >10% of total - must have candidate.")
         layers_sorted = sorted(layer_agg.items(), key=lambda x: -x[1]["host_total"])
         denom = total_host_total_us if total_host_total_us > 0 else total_host_us
         for frame, info in layers_sorted[:top_k]:
@@ -186,7 +186,7 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
 
     if pure_host_pct > threshold("operator_details", "pure_host_pct", 50):
         lines.append(f"  - [DEFINITE] Pure host ops dominate: {pure_host_pct:.0f}% of host time has no device work")
-        lines.append(f"    → Framework/dispatch overhead is the primary host bottleneck")
+        lines.append(f"    - Framework/dispatch overhead is the primary host bottleneck")
         suspects_found = True
 
     high_ratio = [(name, info) for name, info in op_sorted_host
@@ -208,7 +208,7 @@ def parse_overview(profiling_dir: str, rank=None, top_k: int = 15) -> str:
         for name, info in aicpu_ops[:5]:
             lines.append(f"    {name}: device={info['device_us']/1000:.1f}ms  aicpu={info['device_aicpu']/1000:.1f}ms "
                          f"({info['device_aicpu']/info['device_us']*100:.0f}%)")
-        lines.append(f"    → Replace with AI Core impl / change dtype. Cross-validate kernel_details §3 AI CPU Fallback.")
+        lines.append(f"    - Replace with AI Core impl / change dtype. Cross-validate kernel_details section 3 AI CPU Fallback.")
         suspects_found = True
 
     if not suspects_found:

@@ -131,7 +131,7 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
             L.append(f"  {opname[:50]:<50} {elapse:>10.2f} {transit:>12.2f} {wait:>9.2f}")
         p2p_wait = sum(p[3] for p in p2p_list)
         if p2p_total > 0 and p2p_wait / p2p_total > 0.5:
-            L.append(f"  → P2P wait-dominated ({p2p_wait/p2p_total*100:.0f}%) — cross-validate pipeline parallel bubbles.")
+            L.append(f"  - P2P wait-dominated ({p2p_wait/p2p_total*100:.0f}%) — cross-validate pipeline parallel bubbles.")
         L.append("")
 
     # --- 4. Bandwidth Analysis (from matrix) ---
@@ -173,8 +173,8 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
     # Wait ratio high
     if total_elapse > 0 and total_wait / total_elapse > threshold("communication", "wait_dominant_ratio", 0.8):
         L.append(f"  [DEFINITE] Wait time dominates: {total_wait/total_elapse*100:.0f}% of communication time is waiting, not transmitting.")
-        L.append("    → Communication is synchronization-bound, not bandwidth-bound. Check: communication-computation overlap, "
-                 "rank straggler (some ranks slow → others wait), or excessive sync points.")
+        L.append("    - Communication is synchronization-bound, not bandwidth-bound. Check: communication-computation overlap, "
+                 "rank straggler (some ranks slow - others wait), or excessive sync points.")
         suspects = True
 
     # Per-type wait ratio

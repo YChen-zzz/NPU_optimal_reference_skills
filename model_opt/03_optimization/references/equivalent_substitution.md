@@ -28,14 +28,16 @@
 
 **触发**: profiling 中看到一组已知 pattern 的拆解算子(如 RMSNorm 7 步、SwiGLU 2 步、Attention 多步)。
 
-**方法**: 查 `npu_operator_reference.md` 是否有对应融合算子。
+**查询流程**:
+1. 先查 [npu_operator_catalog.yaml](npu_operator_catalog.yaml)，搜索模型中的计算模式是否已有对应的融合算子
+2. 表里没有再查库：`[x for x in dir(torch_npu) if 'npu_' in x.lower()]`，然后查昇腾官方 API 文档（`site:hiascend.com torch_npu <算子名>`）获取 dtype/constraint
+3. 查完更新 YAML 目录，避免重复查询
 
-**常见融合替换**:
-- Cast+Square+Mean+Add+Rsqrt+Mul+Cast → `torch_npu.npu_rms_norm`
-- Mul+Sigmoid(SiLU) + Mul(gate) → `torch_npu.npu_swiglu`
-- Q*K^T+scale+mask+softmax+V → `torch_npu.npu_fusion_attention`
-- Linear+Activation+Linear(FFN) → `torch_npu.npu_ffn`
-- Add+RMSNorm → `torch_npu.npu_add_rms_norm`
+**注意事项**:
+- 故意传错参数触发报错可查看完整签名 schema
+- Probe 必须加 `torch.npu.synchronize()`，NPU 异步执行否则无法捕获错误
+- 多数融合算子返回多个值，用 `result, *_ =` 解包更安全
+- 融合算子可能有 dtype/shape 约束（如仅支持 fp16/bf16），需核对
 
 **特点**: 收益最大(N 个 kernel → 1 个)、风险最低(官方实现)。但注意: 融合算子可能有 dtype/shape 约束(如仅支持 fp16/bf16),需核对。
 
@@ -81,4 +83,4 @@
 
 ## 替换失败的记录
 
-替换尝试失败(如 gather backward 在 NPU 上比 stack 慢 17x)同样有价值——记录到 `<workspace>/evidence_db/` 防止重复踩坑。
+替换尝试失败同样有价值——记录到 `<workspace>/evidence_db/` 防止重复踩坑。

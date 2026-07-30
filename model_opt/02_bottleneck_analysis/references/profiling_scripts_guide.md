@@ -335,18 +335,6 @@ python diff_profiling.py /path/to/before /path/to/after --top-k 20
 
 ---
 
-## 推荐使用顺序
-
-```
-1. parse_step_trace       → 利用率：瓶颈在 host 侧还是 device 侧（先定方向）
-2. parse_op_statistic     → 全局视图：哪类算子最耗时、分布特征
-3. parse_kernel_details   → 硬件单元利用、小算子、并行度、流水 stall
-4. parse_operator_details → 定位源码：耗时操作对应哪行代码（含 Call Stack）
-5. parse_memory_record    → 内存分析：峰值在哪、有无 OOM 风险
-   （按需）parse_operator_memory → 大 tensor 是谁分配的
-6. parse_api_statistic    → host-bound 时下钻 CANN API 成因（memory-mgmt/sync/tiling/launch）
-7. diff_profiling         → 优化效果验证
-```
 
 ## 注意事项
 

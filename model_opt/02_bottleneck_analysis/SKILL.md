@@ -41,18 +41,11 @@ Phase 2 的分析由两条线驱动,顺序执行:
 ## Line B: Profiling 分析
 
 **流程**:
-1. 采集 profiling(L1,不足时 L2)
-2. 跑脚本提取结构化数据(按下方脚本检查清单顺序)。脚本输出含义详见 [profiling_scripts_guide.md](references/profiling_scripts_guide.md)
-3. 用五种分析模式推理:从脚本输出的信号组合中定位瓶颈类型 → 详见 [profiling_to_action.md](references/profiling_to_action.md)
-4. **根因追踪（强制，覆盖所有显著发现，不可跳过）**：
+1. 采集 L1 profiling
+2. 运行 `run_analysis.py`（统一入口）提取结构化数据，输出一份按 A~H 节归类的完整报告。报告 A 节自动包含 L0/L1 交叉验证（传入 `--l0-dir` 时对比 L0 和 L1 的 step_trace，未传入时标注"未经交叉验证，须谨慎"）。L0 来源：第 0 轮用 Phase 1 基线 L0；第 i 轮用第 i-1 轮 Phase 4 的 L0。各脚本输出含义详见 [profiling_scripts_guide.md](references/profiling_scripts_guide.md)
+3. **推理与根因追踪（强制，覆盖所有显著发现，不可跳过）**：阅读完整报告后，用 [profiling_to_action.md](references/profiling_to_action.md) 的两种分析模式（横向关联 + 纵向深入）从信号组合定位瓶颈类型（现象→归因），再通过三座桥（Call Stack、Input Shapes、下发时序）从 profiling 数据定位到**源码中的具体代码位置**，沿调用链追溯根因。定位到源码后回答：**这段代码为什么导致了这个 profiling 现象？**
 
-   8 个脚本产出的每一类信息中，每个**显著发现**都必须追溯到源码根因。"显著"的判定标准 = 脚本自身输出的 DEFINITE 信号 / WARNING 警告，或占比超过脚本定义的阈值。
-
-   **方法论**：每个显著发现都是 profiling 层面的"症状"——一个可观测的现象（如某算子开销高、设备空闲、内存抖动）。根因追踪分两步：
-   - **定位**：通过 [profiling_to_source.md](references/profiling_to_source.md) 定义的桥梁（Call Stack、Input Shapes、AI Core 指标、Accelerator Core、下发时序）从 profiling 数据定位到**源码中的具体代码位置**。
-   - **分析**：定位到源码后，按 [profiling_to_action.md](references/profiling_to_action.md) 模式 2（纵向深入）的方法沿调用链追溯（向上找谁调用、向下看内部实现），通过归因层判断根因属于哪类浪费，回答：**这段代码为什么导致了这个 profiling 现象？**
-
-   桥梁的选择取决于发现类型——agent 需要自行判断哪个桥梁（或哪些桥梁的组合）能将当前发现连接到源码。[profiling_to_source.md](references/profiling_to_source.md) 定义了五座桥及其适用条件，断桥时的降级路径也有说明。
+   "显著"的判定标准 = 脚本自身输出的 DEFINITE 信号 / WARNING 警告，或占比超过脚本定义的阈值。
 
    **参考示例**（非穷举，仅为说明不同发现类型可能需要不同的追踪路径）：
 
@@ -73,31 +66,12 @@ Phase 2 的分析由两条线驱动,顺序执行:
    - 不得用"这个信号看起来不重要"跳过追踪——脚本的 DEFINITE/WARNING 标记是脚本自身定义的显著性判断，agent 不可覆盖
    - 追踪到的根因如果是"框架内部操作"，必须进一步追到"是框架的哪段代码导致的"
 
-5. 确认根因后,产出候选清单(每条含:问题 + 位置 + 影响范围 + 量化上限)
+4. 确认根因后,产出候选清单(每条含:问题 + 位置 + 影响范围 + 量化上限)
 
-### 强制脚本检查清单（确认节点 A 前必须完成）
-
-> 脚本位于本 skill 的 `scripts/` 目录。以下 `$S` 代表该目录。
-> **每个脚本必须运行**。跳过任何脚本需在确认节点 A 中说明理由。
-> **必读参考**列的文件在运行对应脚本后**必须加载**——不是"按需"，是"绑定"。
-
-| # | 脚本 | 作用 | 必读参考（运行后加载） |
-|---|------|------|---------------------|
-| 1 | `$S/parse_step_trace.py <dir>` | 判断瓶颈侧(host or device) | — |
-| 2 | `$S/parse_op_statistic.py <dir>` | 哪类算子最耗时 | — |
-| 3 | `$S/parse_kernel_details.py <dir>` | 硬件单元、小算子、流水 stall | — |
-| 4 | `$S/parse_trace_view.py <dir>` | host→device 下发链、device 空隙、host2device bound 区段、资源利用率 counter 时间线、流并发/掩盖、idle 成因分解、在线编译 | [host_bound_patterns.md](references/host_bound_patterns.md) |
-| 5 | `$S/parse_operator_details.py <dir>` | Call Stack 定位源码、host self duration | [profiling_to_source.md](references/profiling_to_source.md) |
-| 6 | `$S/parse_memory_record.py <dir>` | 内存峰值、碎片化、高频抖动 | [memory_profiling.md](references/memory_profiling.md) |
-| 7 | `$S/parse_operator_memory.py <dir>` | tensor 生命周期、重复同尺寸分配 | [memory_profiling.md](references/memory_profiling.md) |
-| 8 | `$S/parse_api_statistic.py <dir>` | CANN 运行时 API 开销（memory-mgmt/sync/tiling/launch 分解） | — |
-
-> 多卡场景额外运行 `$S/parse_communication.py <dir>` 分析通信开销（HCCL all-reduce/all-gather 等）。
+如需对单个脚本做 `--filter` 深入查询（如 `parse_operator_details --filter Transpose` 获取 Call Stack），可单独调用对应脚本。
 
 **门禁规则**：
-- 每个脚本运行后，写一行发现摘要（如"step_trace: Host-Bound, 利用率 8%"）
-- 脚本输出中的任何 **DEFINITE** 信号或 **WARNING 警告**（由脚本自身定义，如"SEVERE Host-Bound"、"AI_CPU detected"、"高频抖动"）**必须**在确认节点 A 中产生对应候选，或附 profiling 数据依据显式排除
-- 未运行脚本 6-7 时，禁止在候选中包含"内存管理阻塞"类问题（无数据支撑）；运行后若 `memory_profiling.md` 中的模式匹配到脚本输出，则对应问题为必选候选
+- 报告中任何 **DEFINITE** 信号或 **WARNING 警告**（由脚本自身定义，如"SEVERE Host-Bound"、"AI_CPU detected"、"高频抖动"）**必须**在确认节点 A 中产生对应候选，或附 profiling 数据依据显式排除
 
 ## 下一步
 

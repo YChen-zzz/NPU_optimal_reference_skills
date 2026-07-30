@@ -55,7 +55,7 @@ Phase 1  前期准备
    ↓
  ★ B  用户确认提交（展示本批总结 + evidence_db 已记录 → 确认/回退）
    ↓
-Phase 5  工程化提交（git commit + 更新优化日志）
+Phase 5  工程化提交（git commit + evidence_db 记录）
    ↓
  ★ C  用户确认是否继续（展示本轮总结 + 剩余瓶颈 → 继续/停止）
    ↓
@@ -63,10 +63,9 @@ Phase 5  工程化提交（git commit + 更新优化日志）
  └─ 停止 → 结束
 ```
 
-> **三个采集级别在流程中的落点**（L0/L1/L2 为 profiling 采集级别）：
+> **三个采集级别在流程中的落点**（L0/L1 为 profiling 采集级别）：
 > - **L0**：Phase 1 采一次作基线；每个优化阶段的 Phase 4 采一次做收益快速比对。
 > - **L1**：每个优化阶段的 Phase 2 开始前采集，交分析模块定位优化点（迭代回环时每轮都重新采）。
-> - **L2**：仅当某轮 L1 信息不足以定位优化点时，在同一 Phase 2 改采。
 > 级别定义与代码模板见 [01_preparation/SKILL.md](01_preparation/SKILL.md)「采集级别选择」及 [profiling_collection.md](01_preparation/references/profiling_collection.md) §1。
 
 ## 执行协议（agent 程序约束）
@@ -93,7 +92,7 @@ Phase 5  工程化提交（git commit + 更新优化日志）
 **Phase 1 前期准备**：理解模型代码、搭建 NPU 环境、准备测试数据、构建 profiling 采集脚本和精度验证脚本。关键产出：可复现的**基线性能数据（L0 采集，全程仅一次，作为后续每轮收益判定的固定基准）** + 可一键运行的验证脚本。
 
 **Phase 2 瓶颈分析**：
-- **Line B (先做)**:采集 **L1**(信息不足时改采 **L2**),跑脚本,用五种分析模式定位可见瓶颈。
+- **Line B (先做)**:采集 **L1**,跑脚本,用两种分析模式定位可见瓶颈。
 - **Line A (必做)**:通读源码(穿透框架),用四维度审视,发现结构性冗余。用 Line B 的数据量化收益。
 - 两条线**都必须执行**,产出合并后进入**确认节点 A**。
 
@@ -108,7 +107,7 @@ Phase 5  工程化提交（git commit + 更新优化日志）
 
 **★ 确认节点 B**：向用户展示本批总结（优化点、性能收益、精度数据、未采纳方案），询问是否确认提交。用户确认后才执行 git commit。
 
-**Phase 5 工程化提交**：全部工作在 optimize/ 分支进行，每批一个 commit，用户确认后合入 main。维护优化日志记录每批的优化点、修改、效果和未采纳方案。**必须先按 [06_evidence_db/schema.md](06_evidence_db/schema.md) 将本轮优化案例记录到项目工作目录的 `evidence_db/` 下（与 `profiling/` 同级），再执行 git commit**——案例未记录不允许提交（见确认节点 B 第 3 步）。
+**Phase 5 工程化提交**：全部工作在 optimize/ 分支进行，每批一个 commit，用户确认后合入 main。**必须先按 [06_evidence_db/schema.md](06_evidence_db/schema.md) 将本轮优化案例记录到项目工作目录的 `evidence_db/` 下（与 `profiling/` 同级），再执行 git commit**——案例未记录不允许提交（见确认节点 B 第 3 步）。
 
 ## 迭代退出条件
 

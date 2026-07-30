@@ -117,7 +117,7 @@ def condense_stack(cs: str):
 
 
 def _detect_h2d_runs(launch_by_cid, dev_by_cid, gap_thr_ns, min_run_len):
-    """Detect host2device-bound regions: consecutive launch→device pairs on the same
+    """Detect host2device-bound regions: consecutive launch-device pairs on the same
     device stream whose gap (device_start - launch_start) is below threshold.
 
     A small/negative gap means the device starts right when (or before, due to
@@ -167,7 +167,7 @@ def _chain_summary(run):
             chain.append([short, 1])
         else:
             chain[-1][1] += 1
-    return " → ".join(f"{n}×{c}" if c > 1 else n for n, c in chain)
+    return " - ".join(f"{n}x{c}" if c > 1 else n for n, c in chain)
 
 
 def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
@@ -397,10 +397,10 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     L.append(f"  python_function frames:       {caps.get('python_function', 0):,}")
     L.append(f"  fwdbwd links:                 {caps.get('fwdbwd', 0):,}")
     if caps.get("cpu_op", 0) == 0:
-        L.append("  ⚠ No cpu_op/Call stack detected (CPU activity + with_stack not enabled) —")
-        L.append("    Only host→device dispatch timeline available; source mapping requires re-collection with with_stack enabled.")
+        L.append("  [!] No cpu_op/Call stack detected (CPU activity + with_stack not enabled) —")
+        L.append("    Only host-device dispatch timeline available; source mapping requires re-collection with with_stack enabled.")
     elif not has_callstack:
-        L.append("  ⚠ cpu_op present but Call stack empty (with_stack not enabled) — host op timing only, no source stack.")
+        L.append("  [!] cpu_op present but Call stack empty (with_stack not enabled) — host op timing only, no source stack.")
     L.append("")
 
     # --- 1. Device timeline (compute streams only; fold non-compute) ---
@@ -441,7 +441,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
     L.append("")
 
     # --- 3. Dispatch latency ---
-    L.append("## 3. Host→Device Dispatch Latency (HostToDevice flow)")
+    L.append("## 3. Host-Device Dispatch Latency (HostToDevice flow)")
     if disp_stats["count"]:
         avg = disp_stats["sum"] / disp_stats["count"]
         L.append(f"  count={disp_stats['count']:,}  avg={avg/1000:.1f}us  max={disp_stats['max']/1000:.1f}us")
@@ -460,12 +460,12 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             est_source = "p50" if disp_lat else "avg"
             disp_total_us = dev_count * est_per_op_us
             compute_active_us = sum(v[0] for v in compute_streams.values()) / 1000
-            L.append(f"  Estimated dispatch total: {disp_total_us/1000:.1f} ms (dev_count × {est_source}_latency)")
+            L.append(f"  Estimated dispatch total: {disp_total_us/1000:.1f} ms (dev_count x {est_source}_latency)")
             if compute_active_us > 0:
                 disp_kernel_ratio = disp_total_us / compute_active_us * 100
                 L.append(f"  Dispatch / kernel-active ratio: {disp_kernel_ratio:.1f}%")
                 if disp_kernel_ratio > threshold("trace_view", "dispatch_kernel_ratio", 50):
-                    L.append(f"  → Dispatch overhead est. > {threshold('trace_view', 'dispatch_kernel_ratio', 50)}% of kernel-active time")
+                    L.append(f"  - Dispatch overhead est. > {threshold('trace_view', 'dispatch_kernel_ratio', 50)}% of kernel-active time")
                     L.append(f"    Under async queue both overlap; actual impact depends on gap distribution:")
                     L.append(f"    High ratio of gap > 50us: dispatch not fully overlapped — reducing op count helps")
                     L.append(f"    High ratio of gap < 10us: dispatch fully overlapped — Free comes from serial dependency")
@@ -483,7 +483,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         h2d_cs_per_run = threshold("trace_view", "h2d_callstack_per_run", 2)
         runs = _detect_h2d_runs(launch_by_cid, dev_by_cid, h2d_thr_ns, h2d_min_run)
         total_pairs = sum(len(r) for r in runs)
-        L.append(f"  Launch→device gap < {h2d_thr_ns/1000:.0f}us = device starts right at launch "
+        L.append(f"  Launch-device gap < {h2d_thr_ns/1000:.0f}us = device starts right at launch "
                  f"(queue empty, starving for host dispatch).")
         L.append(f"  Runs of >= {h2d_min_run} consecutive such ops on the same stream = host2device-bound region.")
         L.append(f"  {total_pairs:,} host-bound ops in {len(runs)} region(s)"
@@ -536,7 +536,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             L.append("  No sustained host2device-bound region found (pipeline dispatches run far ahead of device).")
             L.append("")
         if not cpuop_timeline:
-            L.append("  ⚠ No cpu_op Call stack in file — source mapping unavailable; re-collect with with_stack enabled.")
+            L.append("  [!] No cpu_op Call stack in file — source mapping unavailable; re-collect with with_stack enabled.")
             L.append("")
     else:
         L.append("  No Node@launch↔device pairs (connection_id) found — cannot assess host2device bound.")
@@ -580,10 +580,10 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         # saturation hints
         hbm_read = grouped.get("HBM Read BW")
         if hbm_read and hbm_read[3] > 0:
-            L.append(f"  → HBM Read BW peak={hbm_read[3]:.0f} MB/s — cross-validate against HBM peak BW to judge memory saturation.")
+            L.append(f"  - HBM Read BW peak={hbm_read[3]:.0f} MB/s — cross-validate against HBM peak BW to judge memory saturation.")
         llc = grouped.get("LLC Hit Rate(%)")
         if llc and llc[1] / (llc[0] or 1) < 0.5:
-            L.append(f"  → LLC Hit Rate avg low ({llc[1]/(llc[0] or 1)*100:.0f}%) — cache-unfriendly access pattern; cross-validate kernel_details mte dominance.")
+            L.append(f"  - LLC Hit Rate avg low ({llc[1]/(llc[0] or 1)*100:.0f}%) — cache-unfriendly access pattern; cross-validate kernel_details mte dominance.")
         L.append("")
     else:
         L.append("  No resource counters found (HBM bw / LLC / utilization timeline unavailable).")
@@ -619,10 +619,10 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             one = concur.get(1, 0) + concur.get(0, 0)
             multi = sum(v for k, v in concur.items() if k >= 2)
             if multi / total_span < 0.2:
-                L.append(f"  → Only {multi/total_span*100:.0f}% of time has ≥2 streams busy concurrently — overlap under-exploited (opportunity to hide latency via multi-stream).")
+                L.append(f"  - Only {multi/total_span*100:.0f}% of time has ≥2 streams busy concurrently — overlap under-exploited (opportunity to hide latency via multi-stream).")
             else:
-                L.append(f"  → {multi/total_span*100:.0f}% of time has ≥2 streams busy — overlap exploited.")
-            L.append("  Cross-validate: gaps on one stream (§1 gap distribution) that overlap busy time on another = coverable bubbles.")
+                L.append(f"  - {multi/total_span*100:.0f}% of time has ≥2 streams busy — overlap exploited.")
+            L.append("  Cross-validate: gaps on one stream (section 1 gap distribution) that overlap busy time on another = coverable bubbles.")
         L.append("")
     else:
         L.append("  Single compute stream or no intervals — no multi-stream overlap to exploit (stream-level latency-hiding N/A).")
@@ -683,9 +683,9 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             L.append(f"    {'residual':<12} {format_duration_ms(residual_idle/1000)} ({residual_idle/sweep_idle*100:>5.1f}%)  (Python framework / no-work; cross-validate operator_details host category)")
             all_attr = list(idle_attr.items()) + [("residual", residual_idle)]
             dom = max(all_attr, key=lambda x: x[1])
-            L.append(f"  → dominant idle cause: {dom[0]} ({dom[1]/sweep_idle*100:.0f}% of idle)")
+            L.append(f"  - dominant idle cause: {dom[0]} ({dom[1]/sweep_idle*100:.0f}% of idle)")
             if dom[0] == "mem-mgmt":
-                L.append("    Host blocked in aclrt memory APIs (Free/Unmap/Malloc/Map) → device starves. Cross-validate api_statistic (memory-mgmt category).")
+                L.append("    Host blocked in aclrt memory APIs (Free/Unmap/Malloc/Map) - device starves. Cross-validate api_statistic (memory-mgmt category).")
             L.append("")
 
     # --- 6. Suspect Signals (diagnostic: compile classification + prefetch candidates) ---
@@ -706,7 +706,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
                  f"starts right at launch (queue starving for host dispatch).")
         L.append(f"    Worst region: {len(worst)} ops, device idle {widle_pct:.0f}%, "
                  f"chain: {_chain_summary(worst)[:100]}")
-        L.append("    → See §4 for full chains + call stacks; cross-validate with operator_details / step_trace.")
+        L.append("    - See section 4 for full chains + call stacks; cross-validate with operator_details / step_trace.")
         L.append("")
 
     if acl_compile:
@@ -720,14 +720,14 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
             early = sum(1 for t in compile_ts if (t - dev_min) / span < threshold("trace_view", "compile_early_window", 0.2))
             early_frac = early / len(compile_ts)
         if early_frac is not None and early_frac >= threshold("trace_view", "compile_early_frac", 0.8):
-            L.append(f"    Distribution: {early_frac*100:.0f}% in first 20% of timeline → **Type A: warmup compilation**.")
-            L.append("    → Collection issue: increase schedule skip_first to skip warmup — not a real bottleneck.")
+            L.append(f"    Distribution: {early_frac*100:.0f}% in first 20% of timeline - **Type A: warmup compilation**.")
+            L.append("    - Collection issue: increase schedule skip_first to skip warmup — not a real bottleneck.")
         elif early_frac is not None:
-            L.append(f"    Distribution: only {early_frac*100:.0f}% in first 20%, rest spans entire timeline → **Type B: per-step online compilation**.")
-            L.append("    → Real bottleneck, not solvable by collection params: check if jit_compile is off, whether dynamic shapes cause re-compilation,"
+            L.append(f"    Distribution: only {early_frac*100:.0f}% in first 20%, rest spans entire timeline - **Type B: per-step online compilation**.")
+            L.append("    - Real bottleneck, not solvable by collection params: check if jit_compile is off, whether dynamic shapes cause re-compilation,"
                      "or switch to graph compilation; aclop per-op online compile path should be avoided.")
         else:
-            L.append("    → Cannot determine distribution (missing device time baseline).")
+            L.append("    - Cannot determine distribution (missing device time baseline).")
         L.append("")
 
     if host_prefetch:
@@ -748,7 +748,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         if decrease_ratio >= threshold("trace_view", "freq_decrease_ratio", 0.05):
             L.append(f"  [DEFINITE] AI Core frequency degradation: {decrease_ratio*100:.1f}% "
                      f"(max={freq_max}MHz, min={min(freq_values)}MHz)")
-            L.append("    → Thermal/power throttling. Check: cooling, power limit, or reduce compute intensity.")
+            L.append("    - Thermal/power throttling. Check: cooling, power limit, or reduce compute intensity.")
             L.append("")
 
     # GC events
@@ -759,7 +759,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         L.append("    Top GC events:")
         for dur, name in gc_sorted[:3]:
             L.append(f"      {format_duration_ms(dur/1000)}  {name[:60]}")
-        L.append("    → Cross-validate: if GC frequent, check for excessive small tensor allocations (operator_memory).")
+        L.append("    - Cross-validate: if GC frequent, check for excessive small tensor allocations (operator_memory).")
         L.append("")
 
     # Stream synchronization
@@ -767,7 +767,7 @@ def parse(csv_path: Path, top_k: int, gap_threshold_us: float) -> str:
         co_ratio = sync_stream_count / node_launch_count * 100
         if co_ratio > threshold("trace_view", "sync_co_ratio", 10):
             L.append(f"  [DEFINITE] Frequent stream synchronization: {sync_stream_count} sync vs {node_launch_count} launches ({co_ratio:.1f}%)")
-            L.append("    → Likely ASCEND_LAUNCH_BLOCKING=1 or explicit syncs. Check env vars and .item()/.numpy() usage.")
+            L.append("    - Likely ASCEND_LAUNCH_BLOCKING=1 or explicit syncs. Check env vars and .item()/.numpy() usage.")
             L.append("")
 
     return "\n".join(L)

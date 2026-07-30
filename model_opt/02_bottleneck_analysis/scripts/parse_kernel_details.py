@@ -278,9 +278,16 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         pct = info["dur_us"] / total_dur_us * 100 if total_dur_us > 0 else 0
         lines.append(f"  {core}: {info['count']:,} kernels, {info['dur_us']/1000:.1f}ms ({pct:.1f}%)")
     if aicpu_kernels:
-        lines.append(f"  ⚠ Non-comm AI_CPU detected: {len(aicpu_kernels)} kernels — see §3 for details")
+        lines.append(f"  [!] Non-comm AI_CPU detected: {len(aicpu_kernels)} kernels — see section 3 for details")
     if aicpu_comm_count:
         lines.append(f"  ({aicpu_comm_count} communication ops on AI_CPU — expected, not a problem)")
+    # Core switching detection: if AI_CORE and AI_VECTOR_CORE both significant, frequent switching may cause overhead
+    aic_dur = core_stats.get("AI_CORE", {}).get("dur_us", 0)
+    aiv_dur = core_stats.get("AI_VECTOR_CORE", {}).get("dur_us", 0)
+    if aic_dur > 0 and aiv_dur > 0:
+        ratio = min(aic_dur, aiv_dur) / max(aic_dur, aiv_dur)
+        if ratio > 0.3:
+            lines.append(f"  [SIGNAL] AI_CORE ({aic_dur/1000:.1f}ms) and AI_VECTOR_CORE ({aiv_dur/1000:.1f}ms) both significant (ratio={ratio:.2f})")
     lines.append("")
 
     # --- 2. Hardware Unit Utilization ---
@@ -304,9 +311,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             avg_mac = aic_mac_sum / aic_kernels
             avg_mte = (aic_mte1_sum + aic_mte2_sum) / aic_kernels
         if avg_mte > avg_mac * threshold("kernel_details", "hw_dominance_ratio", 1.5):
-            lines.append(f"    → Memory-dominated: mte ({avg_mte:.3f}) >> mac ({avg_mac:.3f})")
+            lines.append(f"    - Memory-dominated: mte ({avg_mte:.3f}) >> mac ({avg_mac:.3f})")
         elif avg_mac > avg_mte * threshold("kernel_details", "hw_dominance_ratio", 1.5):
-            lines.append(f"    → Compute-dominated: mac ({avg_mac:.3f}) >> mte ({avg_mte:.3f})")
+            lines.append(f"    - Compute-dominated: mac ({avg_mac:.3f}) >> mte ({avg_mte:.3f})")
     if aiv_kernels > 0:
         lines.append(f"  AI_VECTOR_CORE ({aiv_kernels} kernels):")
         lines.append(f"    vec (compute):  {aiv_vec_sum/aiv_kernels:.3f}")
@@ -323,7 +330,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         non_nd = sum(c for f, c in format_counts.items() if f != "ND" and f != "N/A")
         lines.append(f"  Input Formats: {dict(sorted(format_counts.items(), key=lambda x: -x[1]))}")
         if non_nd / total_fmt > 0.1 if total_fmt else False:
-            lines.append(f"  → {non_nd}/{total_fmt} ({non_nd/total_fmt*100:.0f}%) non-ND input formats — layout conversion cost; cross-validate op_statistic Transpose/Cast.")
+            lines.append(f"  - {non_nd}/{total_fmt} ({non_nd/total_fmt*100:.0f}%) non-ND input formats — layout conversion cost; cross-validate op_statistic Transpose/Cast.")
     if cube_util_values:
         avg_cube = sum(cube_util_values) / len(cube_util_values)
         min_cube = min(cube_util_values)
@@ -331,7 +338,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"  Cube utilization: avg={avg_cube:.1f}%, min={min_cube:.1f}%, "
                      f"low(<50%)={low_util_count}/{len(cube_util_values)}")
     if aic_kernels == 0 and aiv_kernels == 0:
-        lines.append("  ⚠ All ratios are 0 — check if aic_metrics=PipeUtilization was used during collection")
+        lines.append("  [!] All ratios are 0 — check if aic_metrics=PipeUtilization was used during collection")
     lines.append("")
 
     # --- 3. AI CPU Fallback [DEFINITE] ---
@@ -358,8 +365,8 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     short_ratio = (dur_buckets["<5us"] + dur_buckets["5-20us"]) / total_rows * 100 if total_rows > 0 else 0
     lines.append(f"  Short kernel ratio (<20us): {short_ratio:.1f}%")
     if short_ratio > threshold("kernel_details", "short_kernel_dominant", 60):
-        lines.append(f"  → Most kernels are very short. Reducing op count may yield more than optimizing individual ops")
-        lines.append(f"    Cross-validate: op_statistic § fragmentation signal, trace_view § dispatch latency")
+        lines.append(f"  - Most kernels are very short. Reducing op count may yield more than optimizing individual ops")
+        lines.append(f"    Cross-validate: op_statistic section  fragmentation signal, trace_view section  dispatch latency")
     lines.append("")
 
     sec_num += 1
@@ -383,7 +390,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
         lines.append(f"  Dim {bucket:>5}: {count:>6} ({pct:>5.1f}%) {bar}")
     low_par = block_dim_buckets["1"]
     if low_par / total_rows > threshold("kernel_details", "low_parallelism_ratio", 0.1):
-        lines.append(f"  → {low_par} kernels with Block Dim=1: shape may be too small for parallelism")
+        lines.append(f"  - {low_par} kernels with Block Dim=1: shape may be too small for parallelism")
     lines.append("")
 
     # --- 6. Wait Time Distribution (factual) ---
@@ -392,6 +399,13 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
     for bucket, count in wait_buckets.items():
         pct = count / total_rows * 100 if total_rows > 0 else 0
         lines.append(f"  {bucket:>10}: {count:>7} ({pct:.1f}%)")
+    # TASK_QUEUE detection: if all waits are uniformly high, async pipeline may not be active
+    all_waits = [k["wait"] for k in all_kernels]
+    if all_waits and len(all_waits) > 20:
+        avg_wait = sum(all_waits) / len(all_waits)
+        high_wait_count = sum(1 for w in all_waits if w > avg_wait * 0.5)
+        if high_wait_count / len(all_waits) > 0.7 and avg_wait > 100:
+            lines.append(f"  [SIGNAL] Wait times uniformly high (avg={avg_wait:.0f}us, {high_wait_count}/{len(all_waits)} >50% of avg)")
     lines.append("")
 
     # --- 7. Suspect Signals (diagnostic) ---
@@ -462,7 +476,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 15,
             tc = Counter(types).most_common(3)
             type_str = ", ".join(f"{t}:{c}" for t, c in tc)
             lines.append(f"      {total/1000:.2f}ms  {count} kernels  at #{start_idx}  stream={s}  types: {type_str}")
-        lines.append("    → Cross-validate: check if these can be fused (equivalent_substitution layer 1) or batched.")
+        lines.append("    - Cross-validate: check if these can be fused (equivalent_substitution layer 1) or batched.")
         lines.append("")
 
     if not suspect_sorted and not cb_sorted and not high_wait_indices and not fusible_sequences:
@@ -518,8 +532,8 @@ def parse_filtered(profiling_dir: str, filters: list, rank=None, top_k: int = 15
     lines.append(f"  Avg wait: {total_wait/len(matched):.1f} us")
     lines.append("")
 
-    # --- 2. Shape → Performance correlation ---
-    lines.append("## 2. Shape → Performance Correlation")
+    # --- 2. Shape - Performance correlation ---
+    lines.append("## 2. Shape - Performance Correlation")
     shape_groups = defaultdict(list)
     for r in matched:
         shape = r.get("Input Shapes", "").replace("\n", " ").replace('"', '').strip()
