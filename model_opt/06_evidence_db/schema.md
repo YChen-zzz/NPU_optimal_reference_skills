@@ -92,7 +92,7 @@
     cann_version: <string>  # 如 "CANN 8.0.0 / torch_npu 2.3.1"
     model_arch: <string>  # 架构类型而非具体模型名
     input_spec: <string>  # 测试输入规格
-    profiling_level: <string>  # "L0" / "L1" / "L2"
+    profiling_level: <string>  # "L0" / "L1"
     date: <string>  # YYYY-MM-DD
     notes: <string, optional>
 ```

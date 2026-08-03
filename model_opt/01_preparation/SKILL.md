@@ -114,12 +114,13 @@ median_idx = np.argsort(lengths)[len(lengths) // 2]
 └── latest -> YYYYMMDD_HHMMSS  # 软链接指向最新一次
 ```
 
-**路径构造模板**见 [profiling_collection.md](references/profiling_collection.md) §0。
+**路径构造模板**见 [profiling_collection.md](references/profiling_collection.md)。
 
 **强制规则**：
 - `tensorboard_trace_handler` 的路径参数必须指向 `<workspace>/profiling/<timestamp>/`
 - 禁止使用 `/tmp`、系统临时目录或无时间戳的固定路径
-- 每次采集后更新 `latest` 软链接，方便用户直接查看最新结果
+- 禁止使用 `export_chrome_trace`（不产出 `step_trace_time.csv`，无法做交叉验证）
+- 每次采集后更新 `latest` 软链接
 - `profiling/` 目录已在 `.gitignore` 中排除（详见 05_engineering）
 
 ### 采集级别
@@ -128,6 +129,10 @@ median_idx = np.argsort(lengths)[len(lengths) // 2]
 |------|------|--------|
 | **L0** | 仅采集 NPU 活动，最小膨胀 | 小 |
 | **L1** | CPU + NPU + 算子详情 + 调用栈 + 内存 + AI Core 指标 + CANN 运行时 API 统计（覆盖全部 8 个解析脚本） | 大 |
+
+### 三种性能测量
+
+wall-clock（无 profiler 的真实时间）、L0（设备执行时间）、L1（瓶颈分析数据）三种测量的采集方式不同，但**必须覆盖完全相同的代码范围**（模型全部功能代码）。详见 [profiling_collection.md](references/profiling_collection.md) §三种性能测量及其覆盖范围。
 
 ### 采集流程
 
@@ -159,10 +164,8 @@ export CPU_AFFINITY_CONF=1    # CPU 绑核，减少调度抖动，使采集数�
 
 | 训练框架 | 接入方式 | 模板位置 |
 |---------|---------|----------|
-| 原生 PyTorch 循环 | `with torch_npu.profiler.profile(...) as prof` | [profiling_collection.md](references/profiling_collection.md) §1 |
-| PyTorch Lightning | 自定义 Callback | [profiling_collection.md](references/profiling_collection.md) §2.1 |
-| HuggingFace Trainer | 自定义 TrainerCallback | [profiling_collection.md](references/profiling_collection.md) §2.2 |
-| DeepSpeed | 全卡采集，按 rank 分目录 | [profiling_collection.md](references/profiling_collection.md) §2.3 |
+| 原生 PyTorch | `with torch_npu.profiler.profile(...) as prof` | [profiling_collection.md](references/profiling_collection.md) §L0/L1 采集模板 |
+| PyTorch Lightning / HuggingFace Trainer / DeepSpeed | 框架回调中启停 profiler | [profiling_collection.md](references/profiling_collection.md) §训练框架接入 |
 
 ### 环境预检
 
@@ -183,7 +186,7 @@ python <skill_path>/01_preparation/scripts/validate_profiling_env.py --device np
 Baseline 来源、对比指标、阈值的确定**不在本阶段定义**——遵循 [04_accuracy_assurance/SKILL.md](../04_accuracy_assurance/SKILL.md) 的方法论：
 
 - **Baseline 来源**：按优先级（官方基线 → 用户指定 → NPU 优化前自身输出），详见 [baseline_policy.md](../04_accuracy_assurance/references/baseline_policy.md)。不假定必须是 GPU 输出——取决于项目实际情况。
-- **对比指标**：按输出类型选择（连续向量 → cosine + max_abs；离散序列 → 匹配率；聚合标量 → 相对误差），详见 04_accuracy_assurance「指标选择原则」。不硬编码特定指标。
+- **对比指标**：按输出类型选择（连续向量 → cosine + max_abs；离散序列 → 匹配率；聚合标量 → 相对误差），详见 04_accuracy_assurance「距离函数选择」。不硬编码特定指标。
 - **阈值**：必须在比较前声明，不可事后调整。参考阈值见 04_accuracy_assurance，最终以项目实际情况为准。
 
 ### 输出保存约定

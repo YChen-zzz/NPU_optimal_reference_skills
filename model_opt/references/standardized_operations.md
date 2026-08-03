@@ -11,6 +11,7 @@ Profiling 采集、精度对比等操作必须遵循统一的规范，确保每�
 3. **软链接**：每次采集后更新 `profiling/latest` 指向最新结果
 4. **运行日志**：采集过程的 stdout/stderr 同时保存到输出目录下的 `run.log`
 5. **一致性**：同一项目的多次采集必须使用相同的输入数据、warmup 步数、推理参数
+6. **全覆盖 + 口径对齐**：wall-clock、L0、L1 三种测量必须覆盖完全相同的代码范围，且包含模型全部功能代码（禁止禁用任何功能组件）。详见 [profiling_collection.md](../01_preparation/references/profiling_collection.md) §三种性能测量及其覆盖范围。
 
 ## 精度对比规范
 
