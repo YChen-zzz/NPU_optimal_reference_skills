@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Parse op_statistic.csv — global operator time distribution.
+"""解析 op_statistic.csv — 全局算子耗时分布。
 
-This file is always small (~100 rows) and gives the highest-level view of
-where device time is spent. Key for identifying bottleneck TYPE.
+该文件始终较小（约 100 行），提供 device 耗时分布的最高层视图，是识别瓶颈
+TYPE 的关键。
 
-Usage:
+用法:
     python parse_op_statistic.py <profiling_dir> [--rank N] [--top-k 30]
 """
 
@@ -22,7 +22,7 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
     rows = read_csv_all(csv_path)
 
     if not rows:
-        return f"[op_statistic] File not found: {csv_path}"
+        return f"[op_statistic] 文件未找到: {csv_path}"
 
     for row in rows:
         row["_total_us"] = safe_float(row.get("Total Time(us)", 0))
@@ -34,11 +34,11 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
     total_count = sum(r["_count"] for r in rows_sorted)
 
     lines = []
-    lines.append(f"# Op Statistic Summary")
-    lines.append(f"Source: {csv_path}")
-    lines.append(f"Total op types: {len(rows_sorted)}")
-    lines.append(f"Total device time: {total_us/1000:.1f} ms")
-    lines.append(f"Total kernel count: {total_count}")
+    lines.append(f"# 算子统计摘要")
+    lines.append(f"数据来源: {csv_path}")
+    lines.append(f"算子类型总数: {len(rows_sorted)}")
+    lines.append(f"Device 总耗时: {total_us/1000:.1f} ms")
+    lines.append(f"Kernel 总数: {total_count}")
     lines.append("")
 
     header = f"{'#':>3} {'OP Type':<32} {'Count':>7} {'Total(ms)':>10} {'Avg(us)':>9} {'Ratio%':>7} {'Cumul%':>7}"
@@ -57,18 +57,18 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
 
     lines.append("")
 
-    # Statistical analysis
-    lines.append("## Suspect Signals")
-    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
+    # 统计分析
+    lines.append("## 可疑信号")
+    lines.append("  [DEFINITE]=可直接行动  [SIGNAL]=异常，根因未定 — 需结合其他 profiling 维度交叉验证")
 
-    # 1. Concentration: how focused is the bottleneck
+    # 1. 集中度: 瓶颈聚焦程度
     top3_us = sum(r["_total_us"] for r in rows_sorted[:3])
     top3_ratio = top3_us / total_us * 100 if total_us > 0 else 0
-    lines.append(f"- [DEFINITE] Top-3 concentration: {top3_ratio:.1f}% of total device time")
+    lines.append(f"- [DEFINITE] Top-3 集中度: 占 device 总耗时 {top3_ratio:.1f}%")
     if top3_ratio > threshold("op_statistic", "top3_concentration", 80):
-        lines.append(f"  - Bottleneck highly concentrated — optimizing top ops has strong leverage")
+        lines.append(f"  - 瓶颈高度集中 — 优化 top 算子的杠杆效应显著")
 
-    # 2. Data movement overhead (non-compute ops)
+    # 2. Data movement overhead（非 compute 算子）
     move_keywords = tuple(threshold("op_statistic", "move_keywords",
                                     ["Transpose", "Cast", "Copy", "Contiguous", "Reshape", "MemSet", "Format"]))
     move_us = sum(r["_total_us"] for r in rows_sorted
@@ -80,27 +80,27 @@ def parse(profiling_dir: str, rank=None, top_k: int = 30) -> str:
                     and r["_total_us"] > 0]
         lines.append(f"- [SIGNAL] Data movement overhead: {move_ratio:.1f}% ({move_us/1000:.1f}ms)")
         lines.append(f"  ops: {', '.join(move_ops[:8])}")
-        lines.append(f"  - Layout/format conversion cost. Cross-validate: kernel_details for mte dominance, operator_details for source location")
+        lines.append(f"  - Layout/format 转换开销。交叉验证: 在 kernel_details 中确认 mte 占比，在 operator_details 中定位来源")
 
-    # 3. High-count low-avg ops (fragmentation signal)
+    # 3. 高频低耗时算子（fragmentation 信号）
     if total_count > 0:
         avg_count_per_type = total_count / len(rows_sorted)
         fragmented = [(r.get("OP Type", ""), r["_count"], r["_avg_us"])
                       for r in rows_sorted
                       if r["_count"] > avg_count_per_type * 3 and r["_avg_us"] < 10]
         if fragmented:
-            lines.append(f"- [SIGNAL] High-count low-duration ops (fragmentation signal):")
+            lines.append(f"- [SIGNAL] 高频低耗时算子（fragmentation 信号）:")
             for name, count, avg in fragmented[:5]:
-                lines.append(f"  {name}: count={count}, avg={avg:.1f}us — cross-validate: potential for fusion/batching")
+                lines.append(f"  {name}: count={count}, avg={avg:.1f}us — 交叉验证: 可考虑 fusion/batching")
 
-    # 4. Low-count high-avg ops (heavy single ops)
+    # 4. 低频高耗时算子（重型单算子）
     heavy = [(r.get("OP Type", ""), r["_count"], r["_avg_us"], r["_total_us"])
              for r in rows_sorted
              if r["_count"] <= 10 and r["_avg_us"] > 100 and r["_total_us"] / total_us > 0.01]
     if heavy:
-        lines.append(f"- [SIGNAL] Heavy single-invocation ops:")
+        lines.append(f"- [SIGNAL] 重型单次调用算子:")
         for name, count, avg, total in heavy[:5]:
-            lines.append(f"  {name}: count={count}, avg={avg:.0f}us — large shape or expensive kernel")
+            lines.append(f"  {name}: count={count}, avg={avg:.0f}us — 大 shape 或高开销 kernel")
 
     lines.append("")
     return "\n".join(lines)

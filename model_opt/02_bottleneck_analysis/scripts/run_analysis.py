@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Unified profiling analysis entry point.
+"""Profiling 统一分析入口。
 
-Runs all parse scripts in sequence and outputs a single organized report.
-Does NOT combine, filter, or pattern-match across script outputs — each
-script's raw output is preserved verbatim, only grouped into logical sections.
+按顺序执行所有 parse 脚本，输出一份完整的分析报告。
+各脚本的原始输出逐字保留，仅按逻辑分组。
 
-Usage:
-    python run_analysis.py <l1_profiling_dir> [--l0-dir <l0_dir>] [--rank N] [--output report.txt]
+用法:
+    python run_analysis.py <L1 profiling 目录> [--l0-dir <L0目录>] [--rank N] [--output 报告路径]
 
-The report is organized into sections by analysis perspective:
-    A. 全局视角 (step_trace, + L0 cross-check if --l0-dir provided)
+报告结构:
+    A. 全局视角 (step_trace, + L0 交叉验证)
     B. 设备侧：算子分布 (op_statistic)
     C. 设备侧：Kernel 级详情 (kernel_details)
     D. Host-Device 交互 (trace_view)
     E. 源码定位 (operator_details)
     F. 内存 (memory_record, operator_memory)
     G. CANN 运行时 (api_statistic)
-    H. 通信 (communication, only if communication.json exists)
+    H. 通信 (communication, 仅多卡时存在)
+
+默认行为: 报告自动保存到 L1 profiling 目录下的 analysis_report.txt。
 """
 
 import argparse
@@ -44,7 +45,7 @@ SUB_DIVIDER = "-" * 70
 
 
 def run_section(title: str, func, *args, **kwargs) -> str:
-    """Run a parse function and wrap its output in a section header."""
+    """执行单个 parse 函数，用章节标题包裹输出。"""
     lines = [SUB_DIVIDER, f"--- {title} ---", ""]
     try:
         result = func(*args, **kwargs)
@@ -60,12 +61,12 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("profiling_dir", help="L1 profiling output directory")
+    parser.add_argument("profiling_dir", help="L1 profiling 输出目录")
     parser.add_argument("--l0-dir", default=None,
-                        help="L0 profiling directory for L0/L1 cross-validation")
+                        help="L0 profiling 目录（用于 L0/L1 交叉验证）")
     parser.add_argument("--rank", type=int, default=None)
     parser.add_argument("--output", "-o", default=None,
-                        help="Write report to file (default: stdout)")
+                        help="报告输出路径（默认: 保存到 L1 目录下 analysis_report.txt）")
     args = parser.parse_args()
 
     l1_dir = args.profiling_dir
@@ -162,11 +163,15 @@ def main():
 
     report = "\n".join(sections)
 
+    # 确定输出路径: 指定了 --output 则用指定路径，否则默认保存到 L1 目录下
     if args.output:
-        Path(args.output).write_text(report, encoding="utf-8")
-        print(f"Report written to {args.output}")
+        output_path = Path(args.output)
     else:
-        print(report)
+        output_path = Path(l1_dir) / "analysis_report.txt"
+
+    output_path.write_text(report, encoding="utf-8")
+    print(f"分析报告已保存: {output_path}")
+    print(report)
 
 
 if __name__ == "__main__":

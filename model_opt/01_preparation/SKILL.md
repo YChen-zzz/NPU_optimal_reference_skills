@@ -69,7 +69,47 @@ def init_device(device_str: str):
 
 ---
 
-## 三、测试数据准备
+## 三、项目 Git 初始化
+
+在环境就绪、代码拉取完成后，立即初始化 git 并配置 .gitignore，确保后续所有优化工作有版本追溯。
+
+```bash
+cd /path/to/project
+git init
+git checkout -b optimize/main
+```
+
+### .gitignore 必须覆盖的大文件
+
+```gitignore
+# 模型权重 (通常数 GB)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.h5
+
+# Profiling 输出 (每次采集数百 MB)
+profiling/
+*.prof
+*.trace.json
+ASCEND_PROFILER_OUTPUT/
+
+# 编译缓存
+__pycache__/
+*.pyc
+kernel_meta/
+
+# 环境
+.venv/
+```
+
+> 权重和 profiling 数据通过目录约定管理（见 [05_engineering](../05_engineering/SKILL.md)），不入版本库。代码、脚本、配置、对比结果摘要入库。
+
+---
+
+## 四、测试数据准备
 
 **原则**：小而代表性，能快速复现问题，不浪费时间跑全量。
 
@@ -94,7 +134,7 @@ median_idx = np.argsort(lengths)[len(lengths) // 2]
 
 ---
 
-## 四、Profiling 采集体系构建
+## 五、Profiling 采集体系构建
 
 **目标**：构建标准化的性能数据采集流程，为后续瓶颈分析提供可靠数据。
 
@@ -177,7 +217,7 @@ python <skill_path>/01_preparation/scripts/validate_profiling_env.py --device np
 
 ---
 
-## 五、精度验证脚本构建
+## 六、精度验证脚本构建
 
 **目标**：在优化开始前，保存一份可信 baseline 输出，并构建可一键运行的对比脚本，使后续每次优化都能快速验证精度是否退化。
 

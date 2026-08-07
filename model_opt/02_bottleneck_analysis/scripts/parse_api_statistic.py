@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Parse api_statistic.csv — CANN runtime (ACL) API call duration statistics.
+"""解析 api_statistic.csv — CANN runtime (ACL) API 调用耗时统计。
 
-This file is produced at L1 (profiler_level=Level1). It aggregates wall-clock
-durations of CANN runtime API calls at three levels:
-- acl: AscendCL runtime API (dominated by *_Tiling — host-side tiling per aclnn op)
-- communication: HCCL communication API (Notify_*, etc.)
-- node: node-level launch (count == Node@launch in trace_view)
+该文件在 L1 生成（profiler_level=Level1）。按三个层级聚合 CANN runtime API 调用的
+wall-clock 耗时：
+- acl: AscendCL runtime API（以 *_Tiling 为主 — 每个 aclnn op 的 host 侧 tiling）
+- communication: HCCL communication API（Notify_* 等）
+- node: node 级 launch（count == trace_view 中的 Node@launch）
 
-Unique value over other files: host dispatch overhead broken down to the
-**CANN runtime API layer** (tiling / launch / comm notify), complementing
-operator_details (op-name layer) and trace_view (per-instance timeline).
-Answers "how much host time is tiling vs launch vs comm-notify".
+相比其他文件的独特价值：将 host dispatch overhead 拆解到
+**CANN runtime API 层**（tiling / launch / comm notify），补充
+operator_details（op 名层级）与 trace_view（逐实例时间线）。
+回答"host 时间中 tiling、launch、comm-notify 各占多少"。
 
-Usage:
+用法:
     python parse_api_statistic.py <profiling_dir> [--rank N] [--top-k 20]
 """
 
@@ -31,9 +31,9 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
     rows = read_csv_all(csv_path)
 
     if not rows:
-        return f"[api_statistic] File not found or empty: {csv_path}\n(api_statistic.csv is produced at L1; absent at L0.)"
+        return f"[api_statistic] 文件未找到或为空: {csv_path}\n(api_statistic.csv 在 L1 生成；L0 下不存在。)"
 
-    # aggregate by Level
+    # 按 Level 聚合
     by_level = defaultdict(lambda: {"count": 0, "time_us": 0.0, "apis": []})
     total_time = 0.0
     for r in rows:
@@ -49,44 +49,44 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
         total_time += t
 
     lines = []
-    lines.append("# API Statistic Summary (CANN runtime API overhead)")
-    lines.append(f"Source: {csv_path}")
-    lines.append(f"Total API time: {total_time/1000:.1f} ms")
+    lines.append("# API Statistic 摘要 (CANN runtime API overhead)")
+    lines.append(f"数据来源: {csv_path}")
+    lines.append(f"API 总耗时: {total_time/1000:.1f} ms")
     lines.append("")
 
-    # Per-level summary
-    lines.append("## By Level")
+    # 各 Level 摘要
+    lines.append("## 按 Level")
     for lv, info in sorted(by_level.items()):
         pct = info["time_us"] / total_time * 100 if total_time > 0 else 0
         lines.append(f"  {lv:<14} calls={info['count']:>7,}  time={info['time_us']/1000:>9.1f} ms ({pct:>5.1f}%)")
     lines.append("")
 
-    # acl level: tiling breakdown (the host-side dispatch cost per op type)
+    # acl 层级: tiling 拆解（每个 op 类型的 host 侧 dispatch 开销）
     acl = by_level.get("acl")
     if acl:
-        lines.append(f"## ACL API Top {min(top_k, len(acl['apis']))} (host runtime, by total time)")
-        lines.append("  Tiling = host-side param computation per aclnn op (cacheable; dynamic shape re-tiling is waste).")
+        lines.append(f"## ACL API Top {min(top_k, len(acl['apis']))} (host runtime，按总耗时)")
+        lines.append("  Tiling = 每个 aclnn op 的 host 侧参数计算（可缓存；dynamic shape 重复 tiling 是浪费）。")
         header = f"  {'API Name':<32} {'Count':>7} {'Total(ms)':>10} {'Avg(us)':>9} {'Max(us)':>9}"
         lines.append(header)
         lines.append("  " + "-" * (len(header) - 2))
         for t, name, cnt, avg, mx in sorted(acl["apis"], key=lambda x: -x[0])[:top_k]:
             lines.append(f"  {name:<32} {cnt:>7} {t/1000:>10.2f} {avg:>9.2f} {mx:>9.2f}")
-        # tiling subtotal
+        # tiling 小计
         tiling_us = sum(t for t, n, *_ in acl["apis"] if n.endswith("_Tiling"))
         if tiling_us > 0:
             lines.append("")
-            lines.append(f"  Tiling subtotal: {tiling_us/1000:.1f} ms ({tiling_us/total_time*100:.1f}% of all API time)")
+            lines.append(f"  Tiling 小计: {tiling_us/1000:.1f} ms ({tiling_us/total_time*100:.1f}% 占全部 API 时间)")
             if tiling_us / total_time > 0.3:
-                lines.append("  - Tiling dominates ACL API time. If shapes are static/repeated, tiling is re-computed per call — cache it (graph compile / op cache).")
+                lines.append("  - Tiling 主导 ACL API 耗时。若 shape 为静态/重复，每次调用都会重新计算 tiling — 应缓存 (graph compile / op cache)。")
         lines.append("")
 
-    # node launch (count should match trace_view Node@launch)
+    # node launch（count 应与 trace_view Node@launch 一致）
     node = by_level.get("node")
     if node:
-        lines.append("## Node-level Launch")
+        lines.append("## Node 级 Launch")
         for t, name, cnt, avg, mx in node["apis"]:
             lines.append(f"  {name}: count={cnt:,}  total={t/1000:.1f}ms  avg={avg:.1f}us")
-        lines.append(f"  (count should match trace_view Node@launch events.)")
+        lines.append(f"  (count 应与 trace_view Node@launch 事件一致。)")
         lines.append("")
 
     # communication API
@@ -97,8 +97,8 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
             lines.append(f"  {name:<24} count={cnt:>6,}  total={t/1000:>8.1f}ms  avg={avg:.2f}us")
         lines.append("")
 
-    lines.append("## Suspect Signals")
-    # Categorize acl APIs to find the dominant host-API cost driver
+    lines.append("## 可疑信号")
+    # 对 acl API 分类以找出主导的 host-API 开销来源
     if acl:
         cat_us = defaultdict(float)
         for t, name, *_ in acl["apis"]:
@@ -120,19 +120,19 @@ def parse(profiling_dir: str, rank=None, top_k: int = 20) -> str:
                 lines.append(f"  {c:<16} {u/1000:>9.1f} ms ({u/total_time*100 if total_time>0 else 0:>5.1f}%)")
             if dom_pct > 20:
                 hint = {
-                    "memory mgmt": "- Memory mgmt dominates ACL API time (Free/Malloc/Unmap). High churn = frequent alloc/free; cross-validate operator_memory repeated allocs - buffer reuse.",
-                    "stream/device sync": "- Sync dominates ACL API time (SynchronizeStream/Device). Explicit syncs or .item() forcing D-H; cross-validate operator_details sync category.",
-                    "tiling": "- Tiling dominates; cache tiling for static/repeated shapes (graph compile / op cache).",
-                    "launch": "- Launch overhead; reduce op count (fusion / graph compile).",
+                    "memory mgmt": "- Memory mgmt 主导 ACL API 耗时（Free/Malloc/Unmap）。高 churn = 频繁 alloc/free；交叉验证 operator_memory 的重复 alloc - buffer 复用。",
+                    "stream/device sync": "- Sync 主导 ACL API 耗时（SynchronizeStream/Device）。显式 sync 或 .item() 强制 D-H；交叉验证 operator_details 的 sync category。",
+                    "tiling": "- Tiling 主导；为静态/重复 shape 缓存 tiling (graph compile / op cache)。",
+                    "launch": "- Launch overhead；减少 op 数量 (fusion / graph compile)。",
                 }.get(dom_cat, "")
                 if hint:
                     lines.append(f"  [SIGNAL] {hint}")
     else:
-        lines.append("  None")
+        lines.append("  无")
     lines.append("")
-    lines.append("## Cross-validation")
-    lines.append("  - vs operator_details: tiling/launch here is the CANN-API layer of the host time shown there (by op name).")
-    lines.append("  - vs trace_view: node launch count matches Node@launch; tiling precedes each launch on the host thread.")
+    lines.append("## 交叉验证")
+    lines.append("  - 对比 operator_details: 此处的 tiling/launch 是该处所示 host 时间的 CANN-API 层（按 op 名）。")
+    lines.append("  - 对比 trace_view: node launch count 与 Node@launch 一致；tiling 在 host thread 上先于每次 launch。")
     lines.append("")
 
     return "\n".join(lines)

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Parse memory_record.csv — memory usage timeline.
+"""解析 memory_record.csv — 内存使用时间线。
 
-This file records memory state over time from two sources:
-- APP rows: periodic sampling (every ~20ms), only Total Reserved
-- PTA/PTA+GE rows: event-triggered on each alloc/dealloc, has Allocated + Reserved + Active
+该文件记录随时间变化的内存状态，数据来自两个来源：
+- APP 行：周期性采样（约每 20ms），仅含 Total Reserved
+- PTA/PTA+GE 行：由每次 alloc/dealloc 事件触发，含 Allocated + Reserved + Active
 
-Key metrics:
-- Total Reserved: allocator pool size (grows in steps, rarely shrinks)
-- Total Allocated: actual tensor memory usage (fluctuates with alloc/free)
-- Reserved - Allocated: free pool space (fragmentation / headroom)
+关键指标：
+- Total Reserved: allocator 池大小（阶梯式增长，很少收缩）
+- Total Allocated: 实际 tensor 内存使用（随 alloc/free 波动）
+- Reserved - Allocated: 池内空闲空间（fragmentation / headroom）
 
-Usage:
+用法:
     python parse_memory_record.py <profiling_dir> [--rank N] [--buckets 20] [--top-k 10]
 """
 
@@ -29,12 +29,12 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
     csv_path = ascend_dir / "memory_record.csv"
 
     if not csv_path.exists():
-        return f"[memory_record] File not found: {csv_path}"
+        return f"[memory_record] 文件未找到: {csv_path}"
 
-    # Collect records, separating by what data is available
-    reserved_records = []  # (ts, reserved) - all rows
-    allocated_records = []  # (ts, allocated, reserved) - PTA rows only
-    active_records = []     # (ts, active) - rows with Total Active
+    # 收集记录，按可用数据分类
+    reserved_records = []  # (ts, reserved) - 所有行
+    allocated_records = []  # (ts, allocated, reserved) - 仅 PTA 行
+    active_records = []     # (ts, active) - 含 Total Active 的行
     component_counts = defaultdict(int)
     component_peak = defaultdict(float)  # component -> max reserved (WORKSPACE vs tensor)
 
@@ -59,7 +59,7 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
             active_records.append((ts, active))
 
     if not reserved_records:
-        return f"[memory_record] No valid records in {csv_path}"
+        return f"[memory_record] {csv_path} 中无有效记录"
 
     reserved_records.sort(key=lambda x: x[0])
     t0 = reserved_records[0][0]
@@ -67,50 +67,50 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
     duration_s = (t_end - t0) / 1e6
 
     lines = []
-    lines.append("# Memory Record Summary")
-    lines.append(f"Source: {csv_path}")
-    lines.append(f"Total records: {len(reserved_records):,}")
-    lines.append(f"Duration: {duration_s:.2f}s")
+    lines.append("# Memory Record 摘要")
+    lines.append(f"数据来源: {csv_path}")
+    lines.append(f"总记录数: {len(reserved_records):,}")
+    lines.append(f"时长: {duration_s:.2f}s")
     lines.append(f"Components: {dict(component_counts)}")
     lines.append("")
 
-    # --- 0. By Component (WORKSPACE vs tensor memory) ---
-    # WORKSPACE is operator workspace (controllable via tiling/env), distinct
-    # from APP/PTA tensor memory. Segment so controllable part is visible.
+    # --- 0. 按 Component（WORKSPACE vs tensor 内存）---
+    # WORKSPACE 是 operator workspace（可通过 tiling/env 控制），
+    # 与 APP/PTA tensor 内存不同。分段以使可控部分可见。
     if len(component_peak) > 1:
-        lines.append("## 0. Peak Reserved by Component")
-        lines.append("  WORKSPACE = operator workspace (controllable via tiling/env); APP/PTA(+GE) = tensor memory.")
+        lines.append("## 0. 各 Component 的 Peak Reserved")
+        lines.append("  WORKSPACE = operator workspace（可通过 tiling/env 控制）；APP/PTA(+GE) = tensor 内存。")
         for comp, peak in sorted(component_peak.items(), key=lambda x: -x[1]):
             lines.append(f"  {comp:<12} peak={peak:>10,.0f} MB  ({component_counts[comp]:,} records)")
         ws = component_peak.get("WORKSPACE", 0)
         if ws > 0:
-            lines.append(f"  - WORKSPACE peak {ws:,.0f} MB is independently controllable (not tensor allocation).")
+            lines.append(f"  - WORKSPACE peak {ws:,.0f} MB 可独立控制（非 tensor 分配）。")
         lines.append("")
 
-    # Active memory (true live set, distinct from Allocated which includes cache)
+    # Active 内存（真实活跃集，与含 cache 的 Allocated 不同）
     if active_records:
         active_values = [a for _, a in active_records]
-        lines.append(f"## 0a. Active Memory (true live set)")
-        lines.append(f"  Records: {len(active_records):,}  |  Min: {min(active_values):,.0f} MB  |  Max: {max(active_values):,.0f} MB")
-        lines.append(f"  Active < Allocated = cached-but-reusable headroom. Use Active (not Allocated) for batch-size ceiling.")
+        lines.append(f"## 0a. Active 内存（真实活跃集）")
+        lines.append(f"  记录数: {len(active_records):,}  |  Min: {min(active_values):,.0f} MB  |  Max: {max(active_values):,.0f} MB")
+        lines.append(f"  Active < Allocated = 已缓存但可复用的 headroom。应使用 Active (而非 Allocated) 确定 batch-size 上限。")
         lines.append("")
 
-    # --- 1. Reserved memory (pool size) ---
+    # --- 1. Reserved 内存（池大小）---
     res_values = [r[1] for r in reserved_records]
     max_res = max(res_values)
     min_res = min(res_values)
     max_res_idx = res_values.index(max_res)
     max_res_time = (reserved_records[max_res_idx][0] - t0) / 1e6
 
-    lines.append("## 1. Reserved Memory (allocator pool)")
+    lines.append("## 1. Reserved 内存 (allocator pool)")
     lines.append(f"  Min: {min_res:,.0f} MB")
     lines.append(f"  Max: {max_res:,.0f} MB  (at {max_res_time:.3f}s)")
     lines.append(f"  Range: {max_res - min_res:,.0f} MB")
     lines.append("")
 
-    # Bucketed timeline for Reserved
+    # Reserved 的分桶时间线
     if num_buckets > 0 and len(reserved_records) > 1:
-        lines.append("  Timeline (max Reserved per bucket):")
+        lines.append("  时间线（每桶最大 Reserved）:")
         bucket_width = (t_end - t0) / num_buckets
         buckets = [0.0] * num_buckets
         for ts, mem in reserved_records:
@@ -126,7 +126,7 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
             lines.append(f"    {t_s:>7.3f}s {bar:<{bar_width}} {bmax:>8,.0f} MB")
         lines.append("")
 
-    # --- 2. Allocated memory (actual tensor usage) ---
+    # --- 2. Allocated 内存（实际 tensor 使用）---
     if allocated_records:
         allocated_records.sort(key=lambda x: x[0])
         alloc_values = [r[1] for r in allocated_records]
@@ -135,8 +135,8 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         max_alloc_idx = alloc_values.index(max_alloc)
         max_alloc_time = (allocated_records[max_alloc_idx][0] - t0) / 1e6
 
-        lines.append("## 2. Allocated Memory (actual tensor usage)")
-        lines.append(f"  Records with Allocated data: {len(allocated_records):,}")
+        lines.append("## 2. Allocated 内存（实际 tensor 使用）")
+        lines.append(f"  含 Allocated 数据的记录数: {len(allocated_records):,}")
         lines.append(f"  Min: {min_alloc:,.0f} MB")
         lines.append(f"  Max: {max_alloc:,.0f} MB  (at {max_alloc_time:.3f}s)")
         lines.append(f"  Range: {max_alloc - min_alloc:,.0f} MB")
@@ -148,20 +148,20 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         min_frag = min(frag_values)
         avg_frag = sum(frag_values) / len(frag_values)
 
-        lines.append("## 3. Pool Fragmentation (Reserved - Allocated)")
+        lines.append("## 3. 池 Fragmentation (Reserved - Allocated)")
         lines.append(f"  Min gap: {min_frag:,.0f} MB")
         lines.append(f"  Max gap: {max_frag:,.0f} MB")
         lines.append(f"  Avg gap: {avg_frag:,.0f} MB")
         if max_frag > threshold("memory_record", "frag_gap_mb", 1000):
-            lines.append(f"  - Large gap ({max_frag:,.0f}MB) suggests significant pool fragmentation or over-reservation")
+            lines.append(f"  - 大 gap ({max_frag:,.0f}MB) 表明存在显著的池 fragmentation 或过度预留")
         lines.append("")
 
-        # Bucketed fragmentation timeline
+        # 分桶 fragmentation 时间线
         if num_buckets > 0 and len(allocated_records) > 1:
             alloc_t0 = allocated_records[0][0]
             alloc_tend = allocated_records[-1][0]
             if alloc_tend > alloc_t0:
-                lines.append("  Fragmentation timeline (max gap per bucket):")
+                lines.append("  Fragmentation 时间线（每桶最大 gap）:")
                 bw = (alloc_tend - alloc_t0) / num_buckets
                 frag_buckets = [0.0] * num_buckets
                 for ts, alloc, res in allocated_records:
@@ -176,11 +176,11 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
                     lines.append(f"    {t_s:>7.3f}s {bar:<{bar_width}} {fmax:>8,.0f} MB")
                 lines.append("")
     else:
-        lines.append("## 2. Allocated Memory")
-        lines.append("  (No Allocated data available — only APP sampling rows present)")
+        lines.append("## 2. Allocated 内存")
+        lines.append("  (无 Allocated 数据 — 仅存在 APP 采样行)")
         lines.append("")
 
-    # --- 4. Top jumps ---
+    # --- 4. Top 跳变 ---
     jumps = []
     for i in range(1, len(reserved_records)):
         delta = reserved_records[i][1] - reserved_records[i - 1][1]
@@ -190,27 +190,27 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
     top_allocs = heapq.nlargest(top_k, (j for j in jumps if j[1] > 0), key=lambda x: x[0])
     top_deallocs = heapq.nlargest(top_k, (j for j in jumps if j[1] < 0), key=lambda x: x[0])
 
-    lines.append(f"## 4. Top {top_k} Reserved Jumps")
+    lines.append(f"## 4. Top {top_k} Reserved 跳变")
     if top_allocs:
-        lines.append("  Largest increases (pool growth):")
+        lines.append("  最大增长（池扩张）:")
         header = f"    {'Time(s)':>9} {'Delta(MB)':>12} {'After(MB)':>12}"
         lines.append(header)
         for _, delta, ts, mem in top_allocs:
             rel = (ts - t0) / 1e6
             lines.append(f"    {rel:>9.3f} {delta:>+12,.0f} {mem:>12,.0f}")
     if top_deallocs:
-        lines.append("  Largest decreases (pool shrink):")
+        lines.append("  最大减少（池收缩）:")
         for _, delta, ts, mem in top_deallocs:
             rel = (ts - t0) / 1e6
             lines.append(f"    {rel:>9.3f} {delta:>+12,.0f} {mem:>12,.0f}")
     lines.append("")
 
-    # --- Suspect Signals ---
-    lines.append("## Suspect Signals")
-    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
+    # --- 可疑信号 ---
+    lines.append("## 可疑信号")
+    lines.append("  [DEFINITE]=可直接行动  [SIGNAL]=异常，根因未定 — 需结合其他 profiling 维度交叉验证")
     suspects_found = False
 
-    # Growth trend
+    # 增长趋势
     n_records = len(reserved_records)
     if n_records > threshold("memory_record", "growth_min_records", 20):
         early = res_values[:n_records // 10]
@@ -219,19 +219,19 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         late_avg = sum(late) / len(late)
         growth = late_avg - early_avg
         if growth > threshold("memory_record", "growth_mb", 100):
-            lines.append(f"  - [SIGNAL] Reserved growth trend: early avg {early_avg:,.0f}MB - late avg {late_avg:,.0f}MB (+{growth:,.0f}MB)")
-            lines.append(f"    Cross-validate: check operator_memory for unreleased tensor accumulation")
+            lines.append(f"  - [SIGNAL] Reserved 增长趋势：早期均值 {early_avg:,.0f}MB - 末期均值 {late_avg:,.0f}MB (+{growth:,.0f}MB)")
+            lines.append(f"    交叉验证: 检查 operator_memory 是否有未释放的 tensor 累积")
             suspects_found = True
 
-    # High churn
+    # 高 churn
     if jumps:
         large_jumps = [j for j in jumps if j[0] > threshold("memory_record", "churn_jump_mb", 50)]
         if len(large_jumps) > threshold("memory_record", "churn_count", 20):
-            lines.append(f"  - [SIGNAL] High memory churn: {len(large_jumps)} jumps > 50MB")
-            lines.append(f"    Cross-validate: operator_memory for repeated same-size alloc - buffer reuse opportunity")
+            lines.append(f"  - [SIGNAL] 高内存 churn: {len(large_jumps)} 次跳变 > 50MB")
+            lines.append(f"    交叉验证: 在 operator_memory 中查找重复的等大小 alloc - buffer 复用机会")
             suspects_found = True
 
-    # Fragmentation growing over time
+    # Fragmentation 随时间增长
     if allocated_records and len(allocated_records) > 20:
         n_alloc = len(allocated_records)
         early_frag = [r[2] - r[1] for r in allocated_records[:n_alloc // 10]]
@@ -240,16 +240,16 @@ def parse(profiling_dir: str, rank=None, num_buckets: int = 20, top_k: int = 10)
         late_frag_avg = sum(late_frag) / len(late_frag)
         frag_growth = late_frag_avg - early_frag_avg
         if frag_growth > threshold("memory_record", "frag_growth_mb", 50):
-            lines.append(f"  - [SIGNAL] Fragmentation growing: early gap avg {early_frag_avg:,.0f}MB - late {late_frag_avg:,.0f}MB (+{frag_growth:,.0f}MB)")
+            lines.append(f"  - [SIGNAL] Fragmentation 增长：早期 gap 均值 {early_frag_avg:,.0f}MB - 末期 {late_frag_avg:,.0f}MB (+{frag_growth:,.0f}MB)")
             suspects_found = True
 
-    # OOM risk
+    # OOM 风险
     if max_res > threshold("memory_record", "oom_risk_mb", 60000):
-        lines.append(f"  - [DEFINITE] Peak reserved {max_res:,.0f}MB — close to HBM capacity, OOM risk")
+        lines.append(f"  - [DEFINITE] Peak reserved {max_res:,.0f}MB — 接近 HBM 容量，存在 OOM 风险")
         suspects_found = True
 
     if not suspects_found:
-        lines.append("  None — memory usage appears stable")
+        lines.append("  无 — 内存使用表现稳定")
     lines.append("")
 
     return "\n".join(lines)

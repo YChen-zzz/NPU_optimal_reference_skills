@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Parse communication.json + communication_matrix.json — HCCL communication analysis.
+"""解析 communication.json + communication_matrix.json — HCCL communication 分析。
 
-These files are produced when profiler_level >= Level1 in multi-card scenarios.
-They contain per-HCCL-op timing breakdown (Transit/Wait/Sync/Idle) and per-link
-bandwidth info — the only source for "why is communication slow" analysis.
+这些文件在多卡场景下 profiler_level >= Level1 时生成。
+包含逐 HCCL op 的耗时拆分（Transit/Wait/Sync/Idle）与逐 link 的
+bandwidth 信息 — 是分析"communication 为何慢"的唯一数据来源。
 
-Usage:
+用法:
     python parse_communication.py <profiling_dir> [--rank N] [--top-k 15]
         [--output out.txt]
 """
@@ -36,19 +36,19 @@ def extract_op_type(opname):
 def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
     comm_data = json.loads(comm_path.read_text(encoding="utf-8"))
 
-    # Also load matrix if available (per-link bandwidth)
+    # 若可用则加载 matrix（逐 link bandwidth）
     matrix_data = None
     if matrix_path.exists():
         matrix_data = json.loads(matrix_path.read_text(encoding="utf-8"))
 
     L = []
-    L.append("# Communication Analysis")
-    L.append(f"Source: {comm_path}")
+    L.append("# Communication 分析")
+    L.append(f"数据来源: {comm_path}")
     if matrix_data:
         L.append(f"Matrix: {matrix_path}")
     L.append("")
 
-    # Aggregate across all steps
+    # 跨所有 step 聚合
     total_elapse = 0.0
     total_transit = 0.0
     total_wait = 0.0
@@ -57,7 +57,7 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
     by_type = defaultdict(lambda: {"count": 0, "elapse": 0, "transit": 0, "wait": 0, "sync": 0, "idle": 0})
     op_list = []  # (elapse, opname, op_type, time_info, bw_info, step)
     p2p_count = 0
-    p2p_list = []  # (elapse_ms, opname, transit_ms, wait_ms) — A11 P2P detail
+    p2p_list = []  # (elapse_ms, opname, transit_ms, wait_ms) — A11 P2P 详情
 
     for step, step_data in comm_data.items():
         # Collective
@@ -83,7 +83,7 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
             total_sync += sync
             total_idle += idle
             op_list.append((elapse, opname, op_type, ti, info.get("Communication Bandwidth Info", {}), step))
-        # P2P (A11): per-op timing, not just count
+        # P2P (A11): 逐 op 耗时，不仅是 count
         for opname, info in step_data.get("p2p", {}).items():
             ti = info.get("Communication Time Info", {}) if isinstance(info, dict) else {}
             p2p_list.append((safe_float(ti.get("Elapse Time(ms)", 0)), opname,
@@ -91,18 +91,18 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
             p2p_count += 1
 
     if not op_list:
-        return f"[communication] No collective ops found in {comm_path}"
+        return f"[communication] 在 {comm_path} 中未发现 collective op"
 
-    # --- 1. Summary ---
-    L.append("## 1. Summary")
-    L.append(f"  Total ops: {len(op_list)}  |  P2P ops: {p2p_count}")
-    L.append(f"  Total Elapse: {total_elapse:.1f}ms  |  Transit: {total_transit:.1f}ms  |  Wait: {total_wait:.1f}ms  |  Sync: {total_sync:.1f}ms  |  Idle: {total_idle:.1f}ms")
+    # --- 1. 摘要 ---
+    L.append("## 1. 摘要")
+    L.append(f"  总 op 数: {len(op_list)}  |  P2P op: {p2p_count}")
+    L.append(f"  总 Elapse: {total_elapse:.1f}ms  |  Transit: {total_transit:.1f}ms  |  Wait: {total_wait:.1f}ms  |  Sync: {total_sync:.1f}ms  |  Idle: {total_idle:.1f}ms")
     if total_elapse > 0:
-        L.append(f"  Time breakdown: Transit {total_transit/total_elapse*100:.1f}%  Wait {total_wait/total_elapse*100:.1f}%  Sync {total_sync/total_elapse*100:.1f}%  Idle {total_idle/total_elapse*100:.1f}%")
+        L.append(f"  耗时拆分: Transit {total_transit/total_elapse*100:.1f}%  Wait {total_wait/total_elapse*100:.1f}%  Sync {total_sync/total_elapse*100:.1f}%  Idle {total_idle/total_elapse*100:.1f}%")
     L.append("")
 
-    # --- 2. By Op Type ---
-    L.append("## 2. By Op Type")
+    # --- 2. 按算子类型 ---
+    L.append("## 2. 按算子类型")
     L.append(f"  {'Type':<15} {'Count':>6} {'Elapse(ms)':>11} {'Transit(ms)':>12} {'Wait(ms)':>10} {'Wait%':>6} {'Transit%':>9}")
     L.append(f"  {'-'*15} {'-'*6} {'-'*11} {'-'*12} {'-'*10} {'-'*6} {'-'*9}")
     for t, agg in sorted(by_type.items(), key=lambda x: -x[1]["elapse"]):
@@ -111,8 +111,8 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
         L.append(f"  {t:<15} {agg['count']:>6} {agg['elapse']:>11.1f} {agg['transit']:>12.1f} {agg['wait']:>10.1f} {wait_pct:>5.1f}% {transit_pct:>8.1f}%")
     L.append("")
 
-    # --- 3. Top Ops by Elapse ---
-    L.append(f"## 3. Top {min(top_k, len(op_list))} Ops by Elapse Time")
+    # --- 3. 按 Elapse 排序的 Top Op ---
+    L.append(f"## 3. 按 Elapse Time 排序的 Top {min(top_k, len(op_list))} Op")
     op_list.sort(key=lambda x: -x[0])
     L.append(f"  {'Op':<50} {'Type':<12} {'Elapse(ms)':>10} {'Wait%':>6}")
     L.append(f"  {'-'*50} {'-'*12} {'-'*10} {'-'*6}")
@@ -121,22 +121,22 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
         L.append(f"  {opname[:50]:<50} {op_type:<12} {elapse:>10.2f} {wait_pct:>5.1f}%")
     L.append("")
 
-    # --- 3b. P2P ops detail (A11) ---
+    # --- 3b. P2P op 详情 (A11) ---
     if p2p_list:
         p2p_sorted = sorted(p2p_list, key=lambda x: -x[0])
         p2p_total = sum(p[0] for p in p2p_list)
-        L.append(f"## 3b. P2P Ops (send/recv) — {len(p2p_list)} ops, total {p2p_total:.1f}ms")
+        L.append(f"## 3b. P2P Op (send/recv) — {len(p2p_list)} 个 op, 共 {p2p_total:.1f}ms")
         L.append(f"  {'Op':<50} {'Elapse(ms)':>10} {'Transit(ms)':>12} {'Wait(ms)':>9}")
         for elapse, opname, transit, wait in p2p_sorted[:top_k]:
             L.append(f"  {opname[:50]:<50} {elapse:>10.2f} {transit:>12.2f} {wait:>9.2f}")
         p2p_wait = sum(p[3] for p in p2p_list)
         if p2p_total > 0 and p2p_wait / p2p_total > 0.5:
-            L.append(f"  - P2P wait-dominated ({p2p_wait/p2p_total*100:.0f}%) — cross-validate pipeline parallel bubbles.")
+            L.append(f"  - P2P 以 wait 为主 ({p2p_wait/p2p_total*100:.0f}%) — 交叉验证 pipeline parallel 的气泡。")
         L.append("")
 
-    # --- 4. Bandwidth Analysis (from matrix) ---
+    # --- 4. Bandwidth 分析（来自 matrix）---
     if matrix_data:
-        L.append("## 4. Per-Link Bandwidth (from communication_matrix)")
+        L.append("## 4. 逐 Link Bandwidth (来自 communication_matrix)")
         link_bw = []  # (bw, size, time, transport, link, opname)
         for step, step_data in matrix_data.items():
             for opname, links in step_data.get("collective", {}).items():
@@ -154,45 +154,45 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
             avg_bw = sum(bws) / len(bws)
             min_bw = min(bws)
             max_bw = max(bws)
-            L.append(f"  Links with data: {len(link_bw)}  |  Bandwidth: min={min_bw:.1f} avg={avg_bw:.1f} max={max_bw:.1f} GB/s")
+            L.append(f"  有数据的 link: {len(link_bw)}  |  Bandwidth: min={min_bw:.1f} avg={avg_bw:.1f} max={max_bw:.1f} GB/s")
             L.append("")
-            L.append(f"  Top {min(top_k, 5)} highest bandwidth links:")
+            L.append(f"  Bandwidth 最高的 Top {min(top_k, 5)} 个 link:")
             for bw, size, ttime, transport, link, opname in link_bw[:5]:
                 L.append(f"    {bw:>7.1f} GB/s  {size:>10.1f}MB  {transport:<6} {link:<6} {opname}")
             L.append("")
-            L.append(f"  Top {min(top_k, 5)} lowest bandwidth links (potential bottleneck):")
+            L.append(f"  Bandwidth 最低的 Top {min(top_k, 5)} 个 link (潜在瓶颈):")
             for bw, size, ttime, transport, link, opname in reversed(link_bw[-5:]):
                 L.append(f"    {bw:>7.1f} GB/s  {size:>10.1f}MB  {transport:<6} {link:<6} {opname}")
         L.append("")
 
-    # --- 5. Suspect Signals ---
-    L.append("## 5. Suspect Signals")
-    L.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, cross-validate with other dimensions")
+    # --- 5. 可疑信号 ---
+    L.append("## 5. 可疑信号")
+    L.append("  [DEFINITE]=可直接行动  [SIGNAL]=异常，需结合其他维度交叉验证")
     suspects = False
 
-    # Wait ratio high
+    # Wait ratio 偏高
     if total_elapse > 0 and total_wait / total_elapse > threshold("communication", "wait_dominant_ratio", 0.8):
-        L.append(f"  [DEFINITE] Wait time dominates: {total_wait/total_elapse*100:.0f}% of communication time is waiting, not transmitting.")
-        L.append("    - Communication is synchronization-bound, not bandwidth-bound. Check: communication-computation overlap, "
-                 "rank straggler (some ranks slow - others wait), or excessive sync points.")
+        L.append(f"  [DEFINITE] Wait time 占主导: communication 时间的 {total_wait/total_elapse*100:.0f}% 在等待，而非传输。")
+        L.append("    - Communication 是 synchronization-bound 而非 bandwidth-bound。检查: communication-computation overlap、"
+                 "rank straggler（部分 rank 慢 - 其他等待）、或过多 sync 点。")
         suspects = True
 
-    # Per-type wait ratio
+    # 各类型的 wait ratio
     for t, agg in sorted(by_type.items(), key=lambda x: -x[1]["elapse"]):
         if agg["elapse"] > 0 and agg["wait"] / agg["elapse"] > threshold("communication", "per_type_wait_ratio", 0.9) and agg["count"] > threshold("communication", "per_type_min_count", 10):
-            L.append(f"  [SIGNAL] {t}: {agg['count']} ops, {agg['wait']/agg['elapse']*100:.0f}% wait time — "
-                     f"cross-validate: trace_view for compute-comm overlap, check straggler ranks")
+            L.append(f"  [SIGNAL] {t}: {agg['count']} 个 op，{agg['wait']/agg['elapse']*100:.0f}% wait time — "
+                     f"交叉验证: 用 trace_view 查看 compute-comm overlap，检查 straggler rank")
             suspects = True
 
-    # Low bandwidth links
+    # 低 bandwidth link
     if matrix_data and link_bw:
         low_bw = [x for x in link_bw if x[0] < avg_bw * threshold("communication", "low_bw_ratio", 0.3) and x[1] > threshold("communication", "low_bw_min_size_mb", 1)]
         if low_bw:
-            L.append(f"  [SIGNAL] {len(low_bw)} links with bandwidth < 30% of average ({avg_bw:.1f} GB/s) — "
-                     f"potential bottleneck links")
+            L.append(f"  [SIGNAL] {len(low_bw)} 个 link 的 bandwidth < 均值的 30% ({avg_bw:.1f} GB/s) — "
+                     f"潜在瓶颈 link")
             suspects = True
 
-    # Small packet ratio (from Size Distribution)
+    # 小包占比（来自 Size Distribution）
     for step, step_data in comm_data.items():
         total_info = step_data.get("collective", {}).get("Total Op Info", {})
         bw_info = total_info.get("Communication Bandwidth Info", {})
@@ -203,13 +203,13 @@ def parse(comm_path: Path, matrix_path: Path, top_k: int) -> str:
                 small_count = sum(v[0] for k, v in dist.items()
                                   if isinstance(v, list) and len(v) >= 1 and safe_float(k) < 1.0)
                 if total_count > 0 and small_count / total_count > threshold("communication", "small_packet_ratio", 0.3):
-                    L.append(f"  [SIGNAL] {link_type}: {small_count/total_count*100:.0f}% small packets (<1MB) — "
-                             f"cross-validate: consider batching to reduce small-packet overhead")
+                    L.append(f"  [SIGNAL] {link_type}: {small_count/total_count*100:.0f}% 小包 (<1MB) — "
+                             f"交叉验证: 考虑 batching 以减少小包 overhead")
                     suspects = True
         break
 
     if not suspects:
-        L.append("  None")
+        L.append("  无")
     L.append("")
 
     return "\n".join(L)
@@ -229,8 +229,8 @@ def main():
     matrix_path = ascend_dir / "communication_matrix.json"
 
     if not comm_path.exists():
-        result = (f"[communication] File not found: {comm_path}\n"
-                  "Communication data requires profiler_level >= Level1 in multi-card scenarios.")
+        result = (f"[communication] 文件未找到: {comm_path}\n"
+                  "Communication 数据需要多卡场景下 profiler_level >= Level1。")
     else:
         result = parse(comm_path, matrix_path, args.top_k)
 

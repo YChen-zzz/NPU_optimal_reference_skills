@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Parse step_trace_time.csv — device utilization per step.
+"""解析 step_trace_time.csv — 每 step 的 device 利用率。
 
-Shows Computing vs Free vs Communication time ratio per step.
-Key for determining if the workload is Host-Bound, Compute-Bound, or Comm-Bound.
+展示每 step 的 Computing / Free / Communication 时间占比。
+用于判断 workload 是 Host-Bound、Compute-Bound 还是 Comm-Bound。
 
-Usage:
+用法:
     python parse_step_trace.py <profiling_dir> [--rank N]
 """
 
@@ -22,12 +22,12 @@ def parse(profiling_dir: str, rank=None) -> str:
     rows = read_csv_all(csv_path)
 
     if not rows:
-        return f"[step_trace_time] File not found: {csv_path}"
+        return f"[step_trace_time] 文件未找到: {csv_path}"
 
     lines = []
-    lines.append("# Step Trace Time Summary")
-    lines.append(f"Source: {csv_path}")
-    lines.append(f"Steps: {len(rows)}")
+    lines.append("# Step Trace 耗时摘要")
+    lines.append(f"数据来源: {csv_path}")
+    lines.append(f"步数: {len(rows)}")
     lines.append("")
 
     computing_total = 0.0
@@ -51,8 +51,8 @@ def parse(profiling_dir: str, rank=None) -> str:
 
     if grand_total > 0:
         util = computing_total / (computing_total + free_total) * 100 if (computing_total + free_total) > 0 else 0
-        lines.append("## Overall")
-        lines.append(f"  Device Utilization: {util:.1f}%  (Computing / (Computing + Free))")
+        lines.append("## 总体")
+        lines.append(f"  Device 利用率: {util:.1f}%  (Computing / (Computing + Free))")
         lines.append(f"  Computing: {computing_total/1000:.1f} ms ({computing_total/grand_total*100:.1f}%)")
         lines.append(f"  Free:      {free_total/1000:.1f} ms ({free_total/grand_total*100:.1f}%)")
         if comm_total > 0:
@@ -60,38 +60,38 @@ def parse(profiling_dir: str, rank=None) -> str:
         lines.append("")
 
         if util < threshold("step_trace", "severe_host_bound_util", 20):
-            lines.append("  ** SEVERE Host-Bound: device idle >80% of time, bottleneck is on host side **")
+            lines.append("  ** 严重 Host-Bound: device 空闲 >80%，瓶颈在 host 侧 **")
         elif util < threshold("step_trace", "moderate_host_bound_util", 50):
-            lines.append("  ** Moderate Host-Bound: device idle >50%, significant host-side overhead **")
+            lines.append("  ** 中度 Host-Bound: device 空闲 >50%，host 侧 overhead 显著 **")
         else:
-            lines.append(f"  Bottleneck is on device side (utilization {util:.0f}%)")
-            lines.append(f"  - Need kernel-level analysis to distinguish compute-bound vs memory-bound")
+            lines.append(f"  瓶颈在 device 侧（利用率 {util:.0f}%）")
+            lines.append(f"  - 需 kernel 级分析区分 compute-bound 和 memory-bound")
         lines.append("")
 
         optimizable = free_total / grand_total * 100 if grand_total > 0 else 0
-        lines.append(f"  Theoretical limit (= Computing): {computing_total/1000:.1f} ms")
-        lines.append(f"  Optimizable space: {optimizable:.1f}% ((Total - Computing) / Total)")
+        lines.append(f"  理论下限 (= Computing): {computing_total/1000:.1f} ms")
+        lines.append(f"  可优化空间: {optimizable:.1f}% ((Total - Computing) / Total)")
         if optimizable > threshold("step_trace", "large_optimizable_space", 30):
-            lines.append(f"  - Large optimizable space. Non-compute overhead (dispatch/alloc/sync) is significant; rank candidates by this ceiling, not implementation difficulty")
+            lines.append(f"  - 可优化空间大。非 compute 的 overhead（dispatch/alloc/sync）显著；按此上限而非实现难度对候选排序")
         lines.append("")
 
-        # Optimization ceilings (C4, Amdahl-style from this step's time split)
-        lines.append("## Optimization Ceilings (rank candidates by these)")
-        lines.append(f"  Compute floor (cannot reduce below): {computing_total/1000:.1f} ms ({computing_total/grand_total*100:.1f}%)")
-        lines.append(f"  Host/dispatch ceiling (recover Free): {free_total/1000:.1f} ms ({free_total/grand_total*100:.1f}%)")
+        # 优化上限（C4, Amdahl 式，基于本 step 的时间拆分）
+        lines.append("## 优化上限（按这些对候选排序）")
+        lines.append(f"  Compute 下限（不可低于）: {computing_total/1000:.1f} ms ({computing_total/grand_total*100:.1f}%)")
+        lines.append(f"  Host/dispatch 上限（可回收 Free）: {free_total/1000:.1f} ms ({free_total/grand_total*100:.1f}%)")
         if comm_total > 0:
-            lines.append(f"  Communication ceiling (overlap/eliminate): {comm_total/1000:.1f} ms ({comm_total/grand_total*100:.1f}%)")
+            lines.append(f"  Communication 上限（可 overlap/消除）: {comm_total/1000:.1f} ms ({comm_total/grand_total*100:.1f}%)")
         if free_total >= comm_total and free_total > 0:
-            lines.append(f"  - Largest ceiling = host/dispatch (Free). Prioritize host-side fixes first.")
+            lines.append(f"  - 最大上限 = host/dispatch (Free)。优先处理 host 侧问题。")
         elif comm_total > 0:
-            lines.append(f"  - Largest ceiling = communication. Prioritize comm-compute overlap / comm reduction.")
-        lines.append("  Sub-category ceilings (finer breakdown):")
-        lines.append("    sync vs alloc vs dispatch - operator_details section Host Time by Category")
-        lines.append("    fusible small-op savings  - kernel_details section Fusible sequences")
+            lines.append(f"  - 最大上限 = communication。优先 comm-compute overlap / comm 减少。")
+        lines.append("  子类别上限（更细拆分）:")
+        lines.append("    sync vs alloc vs dispatch - operator_details 中 Host Time by Category 部分")
+        lines.append("    fusible small-op 节省  - kernel_details 中 Fusible sequences 部分")
         lines.append("")
 
     if len(step_data) > 1:
-        lines.append("## Per-Step Breakdown")
+        lines.append("## 每 step 拆分")
         has_preparing = any(p > 0 for _, _, _, p, _ in step_data)
         if has_preparing:
             header = f"{'Step':>5} {'Computing(ms)':>13} {'Free(ms)':>10} {'Comm(ms)':>10} {'Preparing(ms)':>14} {'Util%':>7}"
@@ -110,51 +110,51 @@ def parse(profiling_dir: str, rank=None) -> str:
         if has_preparing:
             avg_prep = sum(p for _, _, _, p, _ in step_data) / len(step_data)
             avg_comp = computing_total / len(step_data)
-            lines.append("## Preparing Analysis")
-            lines.append(f"  Avg Preparing per step: {avg_prep/1000:.1f} ms")
-            lines.append(f"  Avg Computing per step: {avg_comp/1000:.1f} ms")
+            lines.append("## Preparing 分析")
+            lines.append(f"  平均每 step Preparing: {avg_prep/1000:.1f} ms")
+            lines.append(f"  平均每 step Computing: {avg_comp/1000:.1f} ms")
             if avg_prep > avg_comp:
-                lines.append(f"  [SIGNAL] Preparing > Computing: may be real host bottleneck or profiler trace-writing overhead")
-                lines.append(f"    Preparing includes Level1 profiler trace-writing cost — cannot determine from this alone.")
-                lines.append(f"    Cross-validate: re-collect with L0 — if Preparing still high under L0 then real host gap, otherwise profiler injection.")
+                lines.append(f"  [SIGNAL] Preparing > Computing: 可能是真实 host 瓶颈或 profiler trace-writing overhead")
+                lines.append(f"    Preparing 包含 Level1 profiler trace-writing 开销 — 仅凭此项无法确定。")
+                lines.append(f"    交叉验证: 用 L0 重新采集 — 若 L0 下 Preparing 仍高则为真实 host 缺口，否则为 profiler 注入。")
             lines.append("")
 
-    # --- Suspect signals ---
-    # Always emit (single-step inference still gets signals); variance/spread
-    # are conditional on >1 step internally.
+    # --- 可疑信号 ---
+    # 始终输出（单步推理仍会输出信号）；variance/spread
+    # 在内部以 >1 step 为前提。
     step_utils = [c / (c + f) * 100 if (c + f) > 0 else 0 for c, f, _, _, _ in step_data]
     step_totals = [c + f + cm for c, f, cm, _, _ in step_data]
 
-    lines.append("## Suspect Signals")
-    lines.append("  [DEFINITE]=actionable as-is  [SIGNAL]=anomaly, root cause uncertain — cross-validate with other profiling dimensions")
+    lines.append("## 可疑信号")
+    lines.append("  [DEFINITE]=可直接行动  [SIGNAL]=异常，根因未定 — 需结合其他 profiling 维度交叉验证")
     suspects_found = False
 
-    # Single-step inference note (variance/spread signals need >1 step)
+    # 单步推理提示（variance/spread 信号需要 >1 step）
     if len(step_data) == 1:
-        lines.append(f"  [INFO] Single-step inference profile ({len(step_data)} step) — step variance/spread signals inactive")
-        lines.append(f"    Use Overall utilization + optimizable space above; cross-validate host-bound cause via trace_view / operator_details")
+        lines.append(f"  [INFO] 单步推理 profile（{len(step_data)} step）— step variance/spread 信号未启用")
+        lines.append(f"    使用上方的总体利用率与可优化空间；通过 trace_view / operator_details 交叉验证 host-bound 成因")
         suspects_found = True
 
-    # Variance between steps
+    # step 间 variance
     if len(step_utils) > 1:
         util_min = min(step_utils)
         util_max = max(step_utils)
         if util_max - util_min > threshold("step_trace", "step_util_variance", 20):
-            lines.append(f"  [SIGNAL] Step utilization variance: {util_min:.1f}% ~ {util_max:.1f}%")
-            lines.append(f"    Some steps significantly less efficient — cross-validate: check for warmup/compilation/dynamic shape")
+            lines.append(f"  [SIGNAL] step 利用率 variance: {util_min:.1f}% ~ {util_max:.1f}%")
+            lines.append(f"    某些 step 效率明显偏低 — 交叉验证: 检查 warmup/compilation/dynamic shape")
             suspects_found = True
 
-    # Step duration outliers
+    # step duration 异常值
     if len(step_totals) > 1:
         total_min = min(step_totals)
         total_max = max(step_totals)
         if total_max > total_min * threshold("step_trace", "step_duration_spread", 2.0):
-            lines.append(f"  [SIGNAL] Step duration spread: {total_min/1000:.1f}ms ~ {total_max/1000:.1f}ms ({total_max/total_min:.1f}x)")
-            lines.append(f"    Large variation — cross-validate: check trace_view whether compile events cluster in outlier steps")
+            lines.append(f"  [SIGNAL] step duration spread: {total_min/1000:.1f}ms ~ {total_max/1000:.1f}ms ({total_max/total_min:.1f}x)")
+            lines.append(f"    波动较大 — 交叉验证: 检查 trace_view 中 compile 事件是否集中在异常 step")
             suspects_found = True
 
     if not suspects_found:
-        lines.append("  None — steps appear consistent")
+        lines.append("  无 — 各 step 表现一致")
     lines.append("")
 
     return "\n".join(lines)
