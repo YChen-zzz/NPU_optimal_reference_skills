@@ -91,7 +91,3 @@ Line T 结束时写入 teacher_gate.json、coverage.csv、supernodes.csv、evide
 一次 Teacher 对齐应支撑多个 Action。当前 backlog 仍有显著收益时不重新读取全部 GPU pack。
 
 仅在主流程判定收益停滞、当前 Supernode map 无法解释新热点，或 graph/dtype/layout/state/communication 变化使旧证据失效时，采新 NPU profile 并做 residual Teacher alignment。GPU source/compiler/regime 未改变时复用原 Teacher pack。
-
-## 8. 条件回归
-
-只在处理 NanoGPT 历史 evidence pack 或评估本 Skill 的历史机会召回能力时读取 [nanogpt-regression.md](references/nanogpt-regression.md)。不得把其中的 step、API 或历史 winner 当作新 workload 默认配方。

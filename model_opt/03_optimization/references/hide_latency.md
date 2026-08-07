@@ -37,13 +37,40 @@ NPU 设备可以同时做 DMA 传输（通信）和 AI Core 计算。让通信�
 
 ### 图编译（掩盖的极端形态）
 
-图编译将多个算子合成一个子图，设备侧一次性调度执行——逐算子 dispatch 时每个 kernel 间有 host 调度间隙，编译后这些间隙被设备内部流水线掩盖。是 host-bound 场景的终极手段。
+图编译把一段 eager 算子捕获为子图，交给 NPU 编译后端做融合、消除、重排和设备侧调度。它可能同时减少 Host dispatch、临时张量和 Device kernel；因此当 profile 出现大量短 kernel、明显 launch gap 或 graph break 时，应优先检查图编译机会，而不是只优化单个算子。
 
-**前置条件检查**：优先 torchair（NPU 专用，不依赖 triton）；其次 torch.compile（依赖 triton）；最后 NPU JIT 编译（可能触发 tiling error）。若都不可用，回退 eager 模式，通过减少 kernel 数量（融合算子、flat forward）缓解 host-bound。
+`torch.compile` 是图捕获入口，实际 lowering 与代码生成由 `backend` 决定。NPU 上必须使用当前软件栈已注册且验证过的 NPU backend；不要假设默认 Inductor/Triton 路径可用。TorchAir 等 NPU 编译器可能作为 backend 或框架集成的一部分接入，按项目版本核实。
 
-**编译范围策略**：挑"碎而密"的地方编，不挑"大而炸"的地方编。从纯计算子模块开始逐渐扩大范围，形状固定的子图优先。不要直接 `torch.compile(model)`——控制流、side-effect 会切图。
+以下最小实验把 `add` 和 `relu` 两个算子放进一个完整编译区：
 
-**放弃条件**：算子不兼容（编译报错且无法绕过）、图太大导致编译期 OOM、触发框架 bug（如 tiling error）、精度不达标且无法通过调整编译选项修复、编译时间过长且无法缓存。回退后记录失败原因到 evidence_db。
+```python
+import torch
+
+
+def add_relu(x, bias):
+    y = torch.add(x, bias)   # 算子 1
+    return torch.relu(y)     # 算子 2
+
+
+def compile_add_relu(npu_backend):
+    return torch.compile(
+        add_relu,
+        backend=npu_backend,  # 已注册的名称或 backend callable
+        fullgraph=True,
+    )
+
+
+compiled_add_relu = compile_add_relu(project_npu_backend)
+compiled_add_relu(x, bias)  # 首次调用触发编译；不要计入稳态耗时
+```
+
+`fullgraph=True` 用于小范围诊断：若两个算子无法捕获为一个 graph，会直接报 graph break。捕获成一个 graph 不保证后端一定生成一个 kernel；必须检查编译后 graph/IR 和 profile，确认融合、kernel 数、launch gap、重编译次数及稳态耗时。
+
+**编译范围策略**：从纯计算、重复执行、形状稳定且“碎而密”的 Supernode 开始；先编译最小闭合子图，再逐步扩大边界。避免直接编译整个模型，因为控制流、side effect、动态 shape 或不支持算子可能切图或频繁重编译。
+
+**验证要求**：编译与 warmup 放在计时区外；先比 eager/compiled 输出与精度，再比较同一 execution regime 下的 graph break、kernel/launch 数、Host/Device 时间、内存和端到端稳态耗时。只有 profile 证实 gap 被消除或隐藏，才登记为有效优化。
+
+**放弃条件**：算子不兼容且无法缩小边界绕过、频繁重编译、编译期 OOM、后端错误、精度不达标、稳态无收益，或编译成本无法缓存。回退 eager，并把失败边界、backend、shape 和原因写入 evidence_db。
 
 ## 环境配置
 
