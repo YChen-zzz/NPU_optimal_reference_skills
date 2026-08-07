@@ -1,9 +1,0 @@
-﻿model_name,domain,structure,params_estimated,resource
-qwen_qwen3_1_7b,NLP,Transformer(Decoder-only),1.7B,单卡
-timm_resnet50_a1_in1k,CV(图像分类),CNN,0.026B,单卡
-facebook_wav2vec2_base,Audio/Speech(语音识别),Transformer(Conformer),0.095B,单卡
-ibm_research_materials_mhg_ged,AI4S(材料科学),GNN,0.05B,单卡
-compvis_stable_diffusion_v1_4,图像生成,Diffusion,1.0B,单卡
-facebook_esm2_t33_650m_ur50d,AI4S(蛋白质/基因组学),Transformer(Encoder-only),0.65B,单卡
-facebook_dinov2_base,CV(图像分类),ViT,0.086B,单卡
-openai_clip_vit_base_patch16,多模态,CLIP(Vision-Language Transformer),0.15B,单卡

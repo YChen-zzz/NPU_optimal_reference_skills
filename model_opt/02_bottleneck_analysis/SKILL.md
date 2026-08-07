@@ -1,86 +1,83 @@
 ---
 name: npu-bottleneck-analysis
-description: 瓶颈分析：profiling 数据分析 + 源码结构分析双线定位性能瓶颈。当用户需要分析性能瓶颈、查看 profiling 数据、定位慢的根因、或分析源码优化机会时触发。
+description: 自动生成 NPU 性能优化候选；始终执行源码结构分析和 NPU Profiling 分析，在用户要求 GPU Teacher 或检测到可用的编译后 GPU evidence pack 时，自动路由到 GPU Teacher Supernode 对齐并合并三条证据线。用于定位训练、推理或科学计算负载的关键路径、源码根因和高价值 Action。
 ---
 
-# NPU 瓶颈分析
+# Phase 2：瓶颈分析与候选路由
 
-## 双线分析模型
+本阶段负责“发现什么值得改、GPU/编译器已采用什么方法、该方法怎样迁移到 NPU、依据是什么、收益上限多大”。具体实现进入 Phase 3，正确性和性能验收进入 Phase 4。
 
-Phase 2 的分析由两条线驱动,顺序执行:
+## 路由
 
-| | Line B: Profiling 分析 | Line A: 源码分析 |
+先校验 Phase 1 产物：workload/precision contract、regime map、NPU baseline、当前 NPU source/profile、Git baseline 和 GPU Teacher pack 状态。
+
+| 路由 | 条件 | 执行 |
 |---|---|---|
-| 起点 | profiling 数据中的异常 | 源码的计算结构 |
-| 发现 | 可见瓶颈(算子慢/空闲/等待) | 结构性问题(可合并/可复用/可预计算/可替换) |
-| 方法 | 分析推理 | 多维度审视源码 |
+| profiling_only | 没有可用 Teacher，且用户未要求 | Line A + Line B |
+| teacher_auto | 检测到已编译、已 warmup、可比的 Teacher pack | Line A + Line B + Line T |
+| teacher_required | 用户明确要求使用 GPU Teacher | Line A + Line B + Line T；缺证据时生成精确 capture request |
+| teacher_hybrid | Teacher 只有部分 regime/provenance，但存在可用信号 | A/B 全量执行，T 只覆盖有证据的范围 |
 
-**执行顺序**:
+用户明确说“teacher-only”时，关键 Teacher 证据缺失则停止 Line T 并报告缺口；否则不因 Teacher 不可用而阻塞 Line A/B。
 
-1. 采集 profiling(同时可开始通读源码)
-2. Line B:跑脚本 → 基于脚本的信息分析进行推理 → 定位可见瓶颈 → 产出候选
-3. Line A:通读源码(穿透框架) → 多维度审视 → 用 Line B 数据量化 → 产出候选
-4. 合并两条线的候选 → ★A 用户确认
+Line T 的资格、信号强度和降级规则见 [GPU Teacher 分析](gpu_teacher/SKILL.md)。
 
-**关键约束**:
-- Line B 和 Line A **都必须执行**,不设跳过条件——Line B 覆盖可见瓶颈,Line A 覆盖 profiling 盲区
-- Line B 先做(脚本快,秒出结果),其数据供 Line A 做量化
-- 两条线的产出都是"问题定位"(问题 + 位置 + 影响范围),不是方案
+## Line A：源码结构分析
 
-## Line A: 源码分析
+读取 [proactive_source_analysis.md](references/proactive_source_analysis.md)，穿透 wrapper 到真实计算路径。
 
-**流程**:
-1. 穿透框架层,定位真实的模型实现代码(跳过 generate/pipeline/Module.__call__ 等 wrapper)
-2. 通读推理路径,建立对三层的认知:模型结构(架构组成) → 实现逻辑(数据流/生命周期/控制流) → 算法(计算方法)
-3. 对每个计算逻辑块用四维度提问:去重(有没有多余)?复用(有没有浪费)?掩盖(能不能并行)?替换(有没有更好的写法)?
-4. 命中的优化机会用 profiling 解析的数据进行量化
-5. 产出"源码问题候选清单"(每条含:问题描述 + 源码位置 + 影响范围)
+1. 建立模型结构、实现逻辑、算法和 state mutation 图。
+2. 按每个 regime 审计热路径操作。
+3. 从去重、复用、掩盖、替换四个维度发现结构性机会。
+4. 使用 Line B 的 NPU 数据量化调用频率、设备时间、host 暴露和内存影响。
+5. 输出源码候选；候选必须包含文件/函数/行、适用 regime 和影响范围。
 
-详见 [proactive_source_analysis.md](references/proactive_source_analysis.md)。
+Line A 不因 Profiling 未显示单个大热点而停止；同源独立调用、重复计算、错误 work-domain、dtype/reporting 混用和跨步可复用结果常需要源码语义才能发现。
 
-## Line B: Profiling 分析
+## Line B：NPU Profiling 分析
 
-**流程**:
-1. 采集 L1 profiling
-2. **下界分析（新增前置步骤）**：在跑脚本之前，先计算三档下界，确定本轮优化方向。详见 [bound_analysis.md](../references/bound_analysis.md)。
+1. 校验 regime/rank/step coverage 和采集口径。
+2. 读取 [bound_analysis.md](../references/bound_analysis.md)，计算 NPU 三档下界与 gap A/B。GPU 时间不能作为 NPU floor。
+3. 对当前 L1 运行 scripts/run_analysis.py <l1_dir> --l0-dir <l0_dir>。
+4. 使用 [profiling_to_action.md](references/profiling_to_action.md) 的横向关联和纵向深入，从显著信号追到源码根因。
+5. 对所有 DEFINITE/WARNING 信号生成候选，或附具体数据做排除。
+6. 将 device 时间转为 critical-path exposed time；host self time、collective 总时长和 kernel duration 不直接等于收益。
 
-   - **Tier 1 (Roofline)**：估算模型关键操作的物理极限下界——对主要计算操作，取 `max(FLOPs / peak_compute, data_bytes / HBM_bandwidth)`。目的是给出物理极限的量级，不需要精确。
-   - **Tier 2 (L0 Computing)**：从当前轮 L0 profiling 的 step_trace 读取 Computing 值——实际所有 kernel 的执行时间之和。
-   - **Tier 3 (对齐 wall-clock)**：从 benchmark 读取——计时范围必须与 L0/L1 覆盖的代码范围完全一致（见 [profiling_collection.md](../01_preparation/references/profiling_collection.md) §三种性能测量及其覆盖范围）。
-   - **gap 分析**：gap A = Tier2 − Tier1（kernel 实现效率 gap，Python 层不可直接优化）；gap B = Tier3 − Tier2（host 开销 gap，Python 层可优化）。
-   - **方向判定**：gap B / Tier3 > 15% → host 侧优化优先（减少 dispatch/同步/冗余调用）；gap B / Tier3 < 5% → host 开销已极小，只能缩小 gap A（融合算子/换算法/图编译）；中间区间两者都有空间。
+解析器说明见 [profiling_scripts_guide.md](references/profiling_scripts_guide.md)。阈值是工作负载相关默认值，不能代替 Agent 判断。
 
-3. 运行 `run_analysis.py`（统一入口）提取结构化数据，输出一份按 A~H 节归类的完整报告。报告 A 节自动包含 L0/L1 交叉验证（传入 `--l0-dir` 时对比 L0 和 L1 的 step_trace，未传入时标注"未经交叉验证，须谨慎"）。L0 来源：第 0 轮用 Phase 1 基线 L0；第 i 轮用第 i-1 轮 Phase 4 的 L0。各脚本输出含义详见 [profiling_scripts_guide.md](references/profiling_scripts_guide.md)
-4. **推理与根因追踪（强制，覆盖所有显著发现，不可跳过）**：阅读完整报告后，用 [profiling_to_action.md](references/profiling_to_action.md) 的两种分析模式（横向关联 + 纵向深入）从信号组合定位瓶颈类型（现象→归因），再通过三座桥（Call Stack、Input Shapes、下发时序）从 profiling 数据定位到**源码中的具体代码位置**，沿调用链追溯根因。定位到源码后回答：**这段代码为什么导致了这个 profiling 现象？**
+## Line T：GPU Teacher 监督信号
 
-   "显著"的判定标准 = 脚本自身输出的 DEFINITE 信号 / WARNING 警告，或占比超过脚本定义的阈值。
+当路由启用时，读取 [gpu_teacher/SKILL.md](gpu_teacher/SKILL.md)。
 
-   **参考示例**（非穷举，仅为说明不同发现类型可能需要不同的追踪路径）：
+Line T 额外回答：
 
-   - 算子开销高（来自 op_statistic / operator_details）→ `--filter <op>` 获取 Call Stack → 追溯到调用该算子的 Python 函数 → 判断是必要计算还是框架内部操作
-   - 设备空闲 / 流间隙（来自 step_trace / trace_view）→ trace_view 的 Host2Device Bound Regions + async_npu flow 回连 cpu_op Call Stack → 定位哪段 Python 代码导致设备等待
-   - Host 开销分类中的"other"占比高（来自 operator_details）→ 该类别是未归类的 host 操作聚合 → 按 host self time 排序找到具体算子 → `--filter` 追 Call Stack
-   - 内存高频抖动（来自 memory_record / operator_memory）→ 重复同尺寸分配列表 → 对应算子的 Call Stack → 定位哪个操作在反复分配/释放
-   - AI_CPU 回退（来自 kernel_details Accelerator Core）→ `--filter <op>` 获取 Input Shapes → 判断 dtype/shape 是否不匹配导致 fallback
+- NPU port 是否丢失或改变了 GPU/common source 已有的 dtype、API 参数、work-domain、layout、state 或训练/报告分支；
+- GPU compiler 从 pre 到 post 删除、融合、折叠、去 materialization、复用或隐藏了什么；
+- GPU/common source 或 compiler 使用了哪种优化方法，该方法依赖哪些成立条件；
+- 当前 NPU 是否仍在为对应工作付出关键路径时间；
+- 哪些机制可直接迁移，哪些只适用于 GPU；同一意图在 NPU 上应走哪一级实现路径。
 
-   **执行规则**：
-   - 每个脚本运行后，先记录该脚本产出的所有 DEFINITE/WARNING 信号
-   - 对每个信号，选择能将其连接到源码的桥梁（或多桥梁组合），执行根因追踪
-   - 追踪产出格式：`发现来源 | 发现内容 | 使用的桥梁 | 源码位置 | 根因 | 候选方案`
-   - 如果追踪过程中发现了**之前未识别的优化机会**，必须加入候选清单
+Line T 必须输出 Supernode 表和带 method guideline 的 Action Sheet，不直接修改代码。
 
-   **门禁规则**：
-   - 所有脚本的 DEFINITE 信号和 WARNING 警告全部完成根因追踪后才能进入候选合并
-   - 不得用"这个信号看起来不重要"跳过追踪——脚本的 DEFINITE/WARNING 标记是脚本自身定义的显著性判断，agent 不可覆盖
-   - 追踪到的根因如果是"框架内部操作"，必须进一步追到"是框架的哪段代码导致的"
+## 合并三条线
 
-5. 确认根因后,产出候选清单(每条含:问题 + 位置 + 影响范围 + 反事实收益上限)。候选评估方法见 [profiling_to_action.md](references/profiling_to_action.md) §候选评估：反事实收益上限。
+按 semantic role、source location、tensor contract 和 regime 合并候选，不按名称拼接。
 
-如需对单个脚本做 `--filter` 深入查询（如 `parse_operator_details --filter Transpose` 获取 Call Stack），可单独调用对应脚本。
+- 同一根因被多条线发现：合并为一个候选，提高 evidence grade，并保留各来源。
+- Teacher 证明 compile 意图/已用方法、Line B 证明 NPU 暴露、Line A 证明源码位置和适用条件：优先形成强候选，并优先测试其 NPU 翻译方案。
+- Line T 没覆盖的 NPU 独有问题继续由 A/B 处理。
+- 三条线结论冲突：降低置信度，先补最小证据或 microbenchmark，不直接改代码。
 
-**门禁规则**：
-- 报告中任何 **DEFINITE** 信号或 **WARNING 警告**（由脚本自身定义，如"SEVERE Host-Bound"、"AI_CPU detected"、"高频抖动"）**必须**在确认节点 A 中产生对应候选，或附 profiling 数据依据显式排除
+所有候选遵循 [Candidate Contract](references/candidate_contract.md)。先完成每个 Supernode/根因的合理 Action Sheet，再做全局排序。
 
-## 下一步
+## Phase 2 完成条件
 
-分析完成后,整理优化建议清单(Line A + Line B 合并),进入主 SKILL.md 的**确认节点 A**。
+进入 Phase 3 前必须满足：
+
+- A/B 已执行；T 的路由决定和证据状态已记录；
+- 每个显著发现都有候选或证据化排除；
+- 每个候选包含目标 gap、regime、关键路径收益上限、证据、实现路径、成本、风险和验证门；
+- 候选已去重、处理依赖/冲突，并完成全局排序；
+- evidence_db/candidates.csv 或等价 JSONL 已写入。
+
+一次 Phase 2 产出的候选集合构成一个 wave backlog。Phase 3 沿 backlog 持续执行；不因接受一个 Action 就重新运行本阶段。

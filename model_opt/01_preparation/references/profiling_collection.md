@@ -6,7 +6,7 @@
 
 | 测量 | 定义 | 采集方式 | 用途 |
 |------|------|---------|------|
-| **wall-clock** | 无 profiler 的真实端到端时间 | `torch.npu.synchronize()` → 计时 → `synchronize()` → 计时，取 ≥20 次中位数 | 真实性能基准；下界分析 Tier 3 |
+| **wall-clock** | 无 profiler 的真实端到端时间 | `torch.npu.synchronize()` → 计时 → `synchronize()` → 计时；从最小采样开始，噪声不足再增加 | 真实性能基准；下界分析 Tier 3 |
 | **L0** | 仅 NPU 活动的 profiling，不注入 CPU barrier | `torch_npu.profiler.profile(activities=[NPU])` + `tensorboard_trace_handler` | 设备执行时间；下界分析 Tier 2；L0/L1 交叉验证 |
 | **L1** | CPU + NPU + 调用栈 + 内存 + AI Core 指标的 profiling | `torch_npu.profiler.profile(activities=[CPU,NPU], with_stack=True, ...)` + `tensorboard_trace_handler` | 瓶颈分析主力；交给 `run_analysis.py` |
 
@@ -20,21 +20,22 @@
 2. **输出路径**：`<workspace>/profiling/<YYYYMMDD_HHMMSS>/`，禁止 `/tmp` 或无时间戳路径；每次更新 `profiling/latest` 软链接
 3. **禁止 `export_chrome_trace`**：只产出 trace.json，不产出 `step_trace_time.csv`，无法做 L0/L1 交叉验证和下界分析。必须用 `tensorboard_trace_handler`
 4. **采集与业务分离**：业务推理逻辑封装为函数（如 `run_inference(model, input_data)`），采集脚本只包围这个函数。优化改函数内部，采集脚本不改
-5. **warmup**：推理场景采集前手动预热 3 次（触发编译/缓存），不使用 schedule；训练场景用 `schedule(skip_first=20)` 替代
+5. **warmup**：必须越过 compile/cache 冷启动并记录判据；预热次数或 `skip_first` 由负载确定，不硬编码
+6. **regime coverage**：先建立 regime map。分别采集会改变 graph/kernel/precision/work-domain/state/communication 的 regime，并记录完整任务出现频率和 transition
 
 ## wall-clock benchmark 模板
 
 ```python
 import time, torch_npu
 
-# warmup
-for _ in range(3):
+# warmup：示例值，实际以 steady-state 判据为准
+for _ in range(warmup_steps):
     run_inference(model, input_data)
 torch.npu.synchronize()
 
 # benchmark（计时范围 = run_inference 的代码范围，须与 L0/L1 一致）
 times = []
-for _ in range(20):
+for _ in range(benchmark_repeats):
     torch.npu.synchronize()
     t0 = time.perf_counter()
     run_inference(model, input_data)
@@ -43,7 +44,7 @@ for _ in range(20):
     times.append((t1 - t0) * 1000)  # ms
 
 times.sort()
-print(f"median={times[len(times)//2]:.2f}ms  p10={times[len(times)//10]:.2f}ms  p90={times[len(times)*9//10]:.2f}ms")
+print(f"median={times[len(times)//2]:.2f}ms  min={times[0]:.2f}ms  max={times[-1]:.2f}ms")
 ```
 
 ## L0 / L1 采集模板
@@ -63,7 +64,7 @@ if os.path.islink(latest): os.remove(latest)
 os.symlink(timestamp, latest)
 
 # --- warmup（L0/L1 共用）---
-for _ in range(3):
+for _ in range(warmup_steps):
     run_inference(model, input_data)
 torch.npu.synchronize()
 
@@ -95,12 +96,12 @@ with torch_npu.profiler.profile(
 
 ## 训练场景适配
 
-训练与推理的差异仅在两点：用 `schedule(skip_first=20)` 替代手动 warmup，用 `for step, batch in enumerate(dataloader)` 替代单次调用。profiler 参数同上。
+训练采集需要按 regime 选择 step，而不是只截取任意连续 step。若 batch size、shape、precision、accumulation phase 或控制流会切换，为每种 steady regime 和关键 transition 建立 capture window；记录它们在完整训练中的出现次数。
 
 ```python
 with torch_npu.profiler.profile(
     activities=[...],  # L0: [NPU]；L1: [CPU, NPU] + with_stack 等
-    schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=1, repeat=1, skip_first=20),
+    schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=active_steps, repeat=1, skip_first=skip_first_steps),
     on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_dir)
 ) as prof:
     for step, batch in enumerate(dataloader):
@@ -116,15 +117,16 @@ with torch_npu.profiler.profile(
 - **HuggingFace Trainer**：`on_train_begin` 启动，`on_step_end` 调 `prof.step()`，`on_train_end` 停止
 - **DeepSpeed 多卡**：每张卡独立采集，写入 `rank_<n>/` 子目录（`run_analysis.py --rank N` 定位）。只要涉及通信瓶颈分析就必须全卡采集
 
-## GPU 对比采集
+## GPU Teacher 采集
 
-跨平台对比时，GPU 侧用 `torch.profiler`（而非 `torch_npu.profiler`）+ `ProfilerActivity.CUDA`（而非 `.NPU`），不使用 `experimental_config`。务必与 NPU 侧 L0 配对：相同输入数据、相同代码范围。
+GPU Teacher 通常来自另一台机器，本流程默认读取离线 evidence pack，不要求 NPU Agent 现场连接 GPU。需要补采时按 [Teacher evidence contract](../../02_bottleneck_analysis/gpu_teacher/references/teacher_evidence.md) 生成 capture request；若在 GPU 机器执行，则使用 `torch.profiler`/compiler 对应工具，并保持 source、regime、输入语义和计时范围可比。
 
 ## 采集前检查
 
 - 业务脚本可在不采集的情况下稳定跑通
 - 已设置 `TASK_QUEUE_ENABLE=2` 和 `CPU_AFFINITY_CONF=1`
 - 运行了 `scripts/validate_profiling_env.py` 确认环境就绪
-- warmup 已完成（推理 ≥3 次，训练 `skip_first=20`）
+- warmup 已越过 compile/cache 冷启动，判据和步数已记录
+- regime、rank 和 transition coverage 已记录
 - 磁盘空间充足（L1 可达数 GB）
 - L0 目录路径已记录（供下一轮 Phase 2 交叉验证）

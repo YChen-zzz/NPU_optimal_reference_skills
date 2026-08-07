@@ -1,131 +1,65 @@
-# NPU 模型适配优化 Skills
+# NPU 自动性能优化 Skill
 
-面向 AI Agent 的昇腾 NPU 模型适配与性能优化技能包。基于 [Anthropic Agent Skills](https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills) 规范构建。
+面向昇腾 NPU 训练、推理和科学计算负载的自动性能优化 Skill。主流程以 NPU Profiling 和源码分析为基础；存在可用的编译后 GPU Teacher evidence pack 时，在 Phase 2 自动增加跨后端监督信号与优化方法先验。
 
-## 快速使用
+## 使用
 
-本仓库包含 skill 文件夹（`model_opt/`、`opt_explore/`）和开发日志文件夹（`docs/`）。如果只需要使用 skills，用 sparse-checkout 跳过 `docs/`：
-
-```bash
-git clone --depth 1 --sparse https://github.com/autokernel-sz/OPT-Skills.git
-cd OPT-Skills && git sparse-checkout set model_opt opt_explore
-```
-
-> 使用 SSH 则将 clone 地址替换为 `git@github.com:autokernel-sz/OPT-Skills.git`。
-
-### Kerminal CLI
-
-将 skill 目录软链接到 Kerminal 的 skills 目录：
+将 `model_opt/` 放入 Agent 的 skills 目录。Agent 根据 `SKILL.md` 的 description 自动触发。
 
 ```bash
-ln -sfn $(pwd)/model_opt ~/.kerminal/skills/model_opt
-ln -sfn $(pwd)/opt_explore ~/.kerminal/skills/opt_explore
+git clone https://github.com/YChen-zzz/NPU_optimal_reference_skills.git
+ln -sfn $(pwd)/NPU_optimal_reference_skills/model_opt ~/.kerminal/skills/model_opt
 ```
 
-也可以直接把 skill 文件夹复制到 `~/.kerminal/skills/` 下。
+GPU Teacher evidence pack 通常由 GPU 机器离线生成并作为输入提供；Skill 不要求 NPU 机器能够访问 GPU 机器。
 
-Kerminal 会在启动时扫描 `~/.kerminal/skills/` 下的所有 `SKILL.md`，根据 `description` 字段自动匹配用户意图并加载。
+## 工作流
 
-### 其他 Agent 框架
-
-本 Skills 遵循通用的 Agent Skills 目录规范：
-
-- 每个 skill 是一个包含 `SKILL.md` 的目录
-- `SKILL.md` 以 YAML frontmatter 开头（`name` + `description`）
-- `references/` 存放按需加载的参考文档
-- `scripts/` 存放可执行的确定性工具脚本
-- `templates/` 存放输出模板
-
-放置到对应框架的 skills 目录即可（如 `~/.claude/skills/`、`.agents/skills/` 等）。
-
-## 目录结构
-
+```text
+Phase 1  合同、regime、基线和 Git 安全点
+   ↓
+Phase 2  候选生成
+         ├─ Line A：源码结构分析
+         ├─ Line B：NPU Profiling 分析
+         └─ Line T：GPU Teacher 对齐（条件启用）
+   ↓
+Phase 3  按收益、证据、风险和成本自动实施 Action
+   ↓
+Phase 4  自动精度/训练/性能门禁
+   ↓
+Phase 5  evidence_db + Git commit
+   ↓
+继续当前 backlog；收益停滞或证据失效后重新 Profiling
 ```
-OPT-Skills/
-├── README.md
-├── model_opt/                        # 主 Skill：NPU 模型适配全流程优化
-│   ├── SKILL.md                      # 全流程、确认节点、子 skill 索引
-│   ├── references/
-│   │   └── standardized_operations.md    # Profiling 采集与精度对比规范
-│   ├── 01_preparation/               # Phase 1：环境搭建、数据准备、脚本构建
-│   ├── 02_profiling_analysis/        # Phase 2：Profiling 数据分析 + 源码根因定位
-│   ├── 03_optimization/              # Phase 3：基于三原语的优化实施
-│   ├── 04_accuracy_assurance/        # Phase 4：推理/训练精度验证
-│   ├── 05_engineering/               # Phase 5：Git 管理、日志、文档
-│   └── 06_evidence_db/               # Phase 6：优化证据库
-│
-├── opt_explore/                      # 辅助 Skill：代码探索与上下文分析
+
+## 目录
+
+```text
+model_opt/
+├── SKILL.md
+├── references/
+├── 01_preparation/
+├── 02_bottleneck_analysis/
 │   ├── SKILL.md
-│   └── references/
-│
-└── docs/                             # 开发日志（不需要可跳过）
-    ├── profiling_update_records/
-    └── system_improvement_records/
+│   ├── references/
+│   ├── scripts/
+│   └── gpu_teacher/
+│       ├── SKILL.md
+│       └── references/
+├── 03_optimization/
+├── 04_accuracy_assurance/
+├── 05_engineering/
+└── 06_evidence_db/
 ```
 
-## Profiling 解析脚本
+## 设计原则
 
-`02_profiling_analysis/scripts/` 提供 7 个 CANN profiling CSV 解析工具：
+- GPU Teacher 迁移编译优化意图，不复制 CUDA/Triton 实现，也不把 GPU 时间当作 NPU floor。
+- Line T 同时提供 Gap 定位和 GPU 已验证的优化方法先验；Phase 3 将其翻译为 NPU 原生实现，实施、验证、Git 和证据记录仍与普通 Profiling 路线共用。
+- 正常优化在授权工作区内自动完成，不设置逐轮人工确认节点。
+- 每个 trial 可回滚；正确性失败、收益不足或内存回退的修改不进入当前最佳分支。
+- 不因接受一个 Action 就重采高开销 Profiling；仅在收益停滞、热点无法解释或旧证据失效时重采。
 
-| 脚本 | 对应文件 | 用途 |
-|------|---------|------|
-| `parse_step_trace.py` | step_trace_time.csv | 设备利用率，判断瓶颈侧 |
-| `parse_op_statistic.py` | op_statistic.csv | 算子耗时分布 + 异常检测 |
-| `parse_kernel_details.py` | kernel_details.csv | 硬件单元、小算子、流水 stall |
-| `parse_operator_details.py` | operator_details.csv | Host 开销 + Call Stack 源码定位 |
-| `parse_memory_record.py` | memory_record.csv | 内存时间线、碎片化 |
-| `parse_operator_memory.py` | operator_memory.csv | 逐 tensor 生命周期 |
-| `diff_profiling.py` | 两份 profiling 对比 | 优化前后效果验证 |
+## Profiling 工具
 
-所有脚本的统一接口：
-
-```bash
-python <script>.py <profiling_dir> [--rank N] [--top-k K] [--output file.txt]
-```
-
-`parse_kernel_details.py` 和 `parse_operator_details.py` 支持 `--filter` 模式对特定算子深入分析。
-
-## 贡献指南
-
-### 原则
-
-1. **SKILL.md 保持精简**：作为调度中心，不超过 150 行。详细内容放 references/
-2. **渐进式加载**：只在 `description` 中声明触发条件，不在 SKILL.md 中堆叠所有知识
-3. **脚本做确定性工作**：可重复执行、输出稳定的操作用脚本；需要判断力的工作留给 Agent
-4. **不做项目特定绑定**：references 和 scripts 中不硬编码项目路径或正则匹配特定代码
-5. **经验可积累**：`npu_checklist.md`、`npu_operator_reference.md` 等文件可以持续增加条目
-
-### 修改规范
-
-**修改 SKILL.md**：
-- 确保 frontmatter 的 `name` 和 `description` 准确反映触发条件
-- 保持"调度中心"定位——只含流程/框架/索引，细节下沉到 references
-
-**修改 references**：
-- 每个文件聚焦一个主题，不超过 200 行
-- 不重复其他文件已有的内容（用链接引用）
-- 描述现象时不绑定到具体脚本名——用"当看到 X 时"而非"当 parse_xxx 输出 Y 时"
-
-**修改 scripts**：
-- 只依赖 CANN profiler 的固定 CSV 格式，不依赖项目代码
-- 大文件用流式处理（heapq Top-K），不全量加载
-- 输出结构：先数据事实，最后 Suspect Signals（疑点标记，不做最终判定）
-- 所有脚本支持 `--output` 参数写文件
-
-**新增文件**：
-- 新增 reference 时在对应 SKILL.md 中添加索引和加载触发条件
-- 新增 script 时同步更新 `profiling_scripts_guide.md`
-
-### 测试
-
-修改或新增脚本后，用实际 profiling 数据验证。例如：
-
-```bash
-# profiling 解析脚本示例
-python 02_profiling_analysis/scripts/parse_op_statistic.py /path/to/profiling
-python 02_profiling_analysis/scripts/parse_kernel_details.py /path/to/profiling --filter MatMul --top-k 5
-```
-
-确保：
-- 脚本无报错，输出格式完整
-- 大文件场景（如 >10M 行的 CSV）在合理时间内完成
+`02_bottleneck_analysis/scripts/run_analysis.py` 是 CANN Profiling 的统一入口。各阈值集中在 `thresholds.py`，应按负载和芯片校准，不视为普适判据。

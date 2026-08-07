@@ -1,191 +1,83 @@
 ---
 name: npu-accuracy-assurance
-description: 精度保证：基线管理、分层验证、精度调试。当用户需要验证优化后精度、对比 GPU/NPU 输出、对齐训练过程、或调试精度问题时触发。
+description: 为 NPU 优化自动建立正确性门禁；按输出语义、精度合同和候选风险，验证算子输出、中间层、梯度、训练短跑及最终任务质量，并在失败时定位首个分歧点。由 npu-model-optimization Phase 4 调用，也适用于独立的 GPU/NPU 精度对齐与精度调试。
 ---
 
-# NPU 精度保证
+# Phase 4：自动正确性与性能门禁
 
-## 核心抽象
+本阶段接受统一 Candidate Contract，不区分候选来自源码、NPU Profiling 或 GPU Teacher。GPU 结果可提供语义和编译意图证据，但不能代替原始精度 baseline。
 
-精度验证的本质是**定义一个距离函数 d(baseline, optimized)，然后检查 d < 阈值**。
+## 1. 冻结验证合同
 
-四个维度共同决定"距离"的定义：
+修改前记录：
 
-- **为谁比较**（下游消费者）→ 决定验证边界：比模型直接输出还是下游功能指标
-- **比较什么**（输出类型）→ 决定距离函数的数学形式
-- **在哪里比较**（验证范围）→ 决定比较的粒度和阈值松紧
-- **在什么精度下比较**（dtype 上下文）→ 决定阈值的合理范围
+- 原始 accuracy baseline 与当前 iterative performance baseline；
+- 被修改产物的 shape、dtype、layout、mask/work-domain、state mutation 和下游消费者；
+- 距离函数、阈值、代表输入、边界输入和受影响 regime；
+- 训练候选是否影响 backward、saved tensor、optimizer 或 collective ordering；
+- 计时区间、warmup、同步方式和噪声阈值。
 
-### 验证边界：比到什么产物
+阈值必须在看到优化结果前声明。baseline 选择见 [baseline_policy.md](references/baseline_policy.md)。
 
-推理优化的最小验证粒度是模型的最终产物（forward 的返回值），不是中间算子输出。但"最终产物"有两层：
+## 2. 选择距离函数
 
-**模型直接输出**：forward 的返回值（logits、energy、图片、坐标等）。始终可用，快速。
+距离函数必须匹配下游语义：
 
-**下游功能指标**：用模型输出完成的任务的评价（benchmark 分数、RMSD、MD 轨迹稳定性等）。对齐了下游消费者真正关心的东西。
+| 产物 | 最低比较集合 |
+|---|---|
+| 连续张量、logits、embedding | cosine + max absolute/relative error |
+| loss、energy、score | absolute + relative error |
+| 概率或 attention 分布 | max error + KL/JS，按消费方式补充 |
+| token、标签、离散索引 | 完全匹配率或任务允许的等价规则 |
+| 图像、结构、物理场 | LPIPS/FID、RMSD/TM-score、空间 RMSE 等领域指标 |
 
-判断用哪一层：
+模型输出不能确定性决定最终任务时，必须验证下游功能指标。模型家族提示见 [model_family_hints.md](references/model_family_hints.md)。
 
-| 直接输出是否确定性决定下游结果 | 验证边界 | 例子 |
-|---|---|---|
-| 是（输出确定性 + 下游直接消费） | 模型直接输出 | MACE energy/forces → MD 模拟器直接使用 |
-| 否（输出到消费间有随机性或复杂变换） | 下游功能指标 | LLM 采样 → benchmark 评分；Diffusion → FID/LPIPS；蛋白质折叠 → TM-score |
+## 3. 自动验证阶梯
 
-**确定性判断方法**：从模型直接输出到下游消费之间，是否有采样、随机过程、或非线性放大？如果有，直接输出的等价不保证下游等价，必须验证下游功能指标。
+只执行 Candidate Contract 要求和风险传播所需的层级；失败立即停止性能采纳并进入定位。
 
-### 距离函数选择
+1. **静态合同**：源码路径、shape、dtype、layout、mask/work-domain、alias、state 和随机性。
+2. **局部数值**：同输入下比较修改区域的完整输出与边界 case；融合候选同时比较融合区入口和出口。
+3. **模型传播**：比较受影响中间层、最后一层和模型最终输出，定位误差是否被放大。
+4. **训练语义**：受影响时比较 loss、gradient、saved tensor、参数更新、optimizer state 与 collective ordering。
+5. **加权短跑**：按真实 regime 出现次数构造短程训练；覆盖所有受影响 regime，比较 loss/validation loss、grad norm、稳定性和 wall-clock。
+6. **完整任务**：在 wave 里程碑、重大高风险修改和最终版本运行，验证最终任务指标、稳定性与端到端时间。
 
-距离函数由输出类型决定，且必须匹配下游消费者认为"等价"的语义，而非仅匹配数值形式：
+短跑步数不是固定常数。Agent 根据完整运行时长、状态覆盖、编译摊销、噪声和候选风险选择最小充分步数；约 100 step 仅是常见起点。多 batch/shape 训练按实际出现比例采样，并显式覆盖 transition step。
 
-**连续向量**（logits、forces、embedding）：
-- cosine similarity（方向一致性）+ max abs diff（worst case）
-- 两者同时满足才通过——cosine 高但 max_abs 大说明个别位置有问题
+完整任务也不是每个 Action 都运行。若 full run 很便宜可提高频率；否则在 compatible bundle/wave 通过短跑后运行。最终采纳必须至少有一次完整任务结果。
 
-**聚合标量**（energy、loss、score）：
-- 相对误差 |a-b|/|a|（对量级不敏感）
-- 绝对误差 |a-b|（当 baseline 接近 0 时需要）
+## 4. 性能门
 
-**分布**（attention weights、概率分布）：
-- KL 散度、JS 散度（度量分布差异，比逐元素 diff 更语义化）
+正确性通过后才判性能：
 
-**离散序列**（token ids、标签）：
-- 完全匹配率（离散输出无渐变，对就是对错就是错）
-- 注意：自回归场景中 logits 微小 diff 可能导致 argmax 翻转
+- 使用无 profiler wall-clock 作为采纳依据，比较当前 iterative baseline；
+- 计时覆盖相同代码范围、regime 混合与同步边界；
+- 收益必须超过测量噪声，且内存、编译时间和稳定性未越界；
+- L0/L1 用于解释收益，不要求每个 Action 重采；重新 Profiling 由主流程的 stall 条件触发。
 
-**图片/矩阵**（diffusion 输出、feature map）：
-- 像素级 MSE/cosine 通常无意义——两张"看起来一样"的图片像素可能完全不同
-- 感知级度量：LPIPS（感知相似度）、FID（分布级，需多样本）、SSIM（结构相似度）
+## 5. 自动决策
 
-**领域功能指标**（AI4S 等场景下游消费者真正关心的度量）：
-- 蛋白质：RMSD / TM-score（结构等价，非坐标 diff）
-- 天气：空间 RMSE / 异常相关系数
-- 分子动力学：轨迹偏差 / 物理量守恒
-- 当模型直接输出和"真正关心的东西"不一致时，必须用领域功能指标
+| 结果 | 动作 |
+|---|---|
+| 正确性通过且收益显著 | accept，更新 iterative baseline |
+| 正确性通过但收益在噪声内 | reject_no_gain；若优先候选连续如此，触发 stall 审计 |
+| 局部正确性失败 | reject_accuracy，回退并按 [debugging_guide.md](references/debugging_guide.md) 定位 |
+| 仅短跑通过 | provisional；不得作为最终完成状态 |
+| 某 regime/rank 未覆盖 | incomplete，补最小覆盖后再判定 |
+| 内存、编译或稳定性退化 | reject_constraint，记录触发条件 |
 
-单一距离函数通常不充分——应组合使用，从不同角度刻画"够不够近"。
+失败试验必须保留候选、补丁、环境、输入、阈值、差异首发位置和失败 predicate，避免后续重复。
 
-### 阈值确定
+## 6. 精度调试
 
-阈值不是固定的，取决于三个因素：
+验证失败时，从最终产物逆向定位：
 
-1. **dtype 上下文**：fp32 下不同实现路径的浮点非结合性产生的自然 diff 通常在 1e-6 量级；fp16/bf16 下可到 1e-3 量级。阈值应高于自然 diff 但低于"功能错误"的 diff。
-2. **自然波动基准**：同模型、同硬件、同输入跑两次，测得的 d 就是"自然波动"。阈值应显著大于自然波动。
-3. **验证范围**：单步等价验证（一次替换）用紧阈值；累积多步优化的端到端验证用松阈值（浮点误差会累积）。
+1. 复现相同输入、权重、seed 和 state；
+2. 找到第一个产生显著差异的 regime/step；
+3. 逐模块或二分比较，定位首个分歧的 Supernode/算子；
+4. 检查 dtype 收窄、`.float()` 边界、mask/window/work-domain、广播、layout、in-place/alias、随机数、saved tensor 与 collective 顺序；
+5. 修正后从最低失败层级重新进入验证阶梯。
 
-阈值必须在比较前声明，不可事后调整。参考起点：fp32 单步 cosine >= 0.9999 / max_abs < 1e-4；fp16 单步 cosine >= 0.999 / max_abs < 1e-2。最终以项目实际情况和自然波动基准为准。
-
-## 基线管理
-
-精度对比的前提是有一个可信 baseline。来源不对，整个结论无效。
-
-**优先级**：官方基线 → 用户指定基线 → NPU 优化前自身输出（仅推理场景）。不假定必须是 GPU 输出——取决于项目实际情况。
-
-**强制规则**：先确认基线来源，再写对比脚本。阈值必须在比较前声明。样例级对齐 ≠ 模型级对齐。
-
-**自一致性验证**：优化前必须验证 baseline 自身确定性——用相同输入运行原始模型两次，确认输出 diff = 0（推理场景）或 diff 在自然波动范围内（训练场景）。若 baseline 不确定，精度对比的阈值必须大于 baseline 自身波动，否则无法区分"优化引入的差异"和"baseline 的随机波动"。
-
-详见 [baseline_policy.md](references/baseline_policy.md)
-
-## 验证范围
-
-### 推理场景
-
-**Level 1 快速验证**（每次修改后）：
-- 样本：少量代表性输入（覆盖边界 case）
-- 比较对象：模型直接输出
-- 度量：按输出类型选择（见上方距离函数选择）
-- 目的：快速确认改动没有引入 bug
-
-**Level 2 全量验证**（每批提交前，提交门禁之一）：
-- 样本：完整测试集，覆盖所有推理路径，关注 worst case
-- 比较对象：模型直接输出 + 下游功能指标（如果直接输出不确定性决定下游）
-- 度量：直接输出用适当的距离函数；下游指标用领域功能度量
-- 目的：确认累积改动无精度退化
-- **必须与 Profiling 确认收益一起作为提交前的两项门禁**
-
-**Level 3 精度调试**（验证未通过时）：详见 [debugging_guide.md](references/debugging_guide.md)
-- **逐层精度追踪**（Level 3 的核心方法）：当 Level 1/2 验证未通过时，逐层对比可定位退化开始的位置。在优化前模型和优化后模型中，对每一层的中间输出注册 hook 保存，逐层计算距离函数，定位第一个显著退化的层。适用于多层模型累积精度退化、疑似特定算子引入的精度问题等场景。逐层对比的阈值应比最终输出宽松（单层误差经后续层放大后才显现）。
-
-### 训练场景：三层递进验证
-
-训练精度对齐比推理复杂得多，需要从微观到宏观逐层验证。每一层定义自己的距离函数和阈值：
-
-#### Layer 1：单步数值对齐（微观）
-
-固定相同输入、相同初始权重、关闭所有随机性，对比单步训练的数值。
-
-| 对齐点 | 距离函数 | 参考阈值 |
-|--------|----------|----------|
-| 前向输出 | cosine sim + max abs diff + 相对误差 | 单步相对误差 < 5% |
-| Loss 值 | 绝对误差 + 相对误差 | 相对误差 < 1% |
-| 反向梯度 | cosine sim + 梯度范数比 + max abs diff | cosine > 0.999 |
-| 参数更新 | 相对误差 + max abs diff | 相对误差 < 1% |
-
-**问题定位方法**：逐模块比对 → 模块内二分 → 定位到具体算子。
-
-#### Layer 2：训练过程对齐（中观）
-
-跑多步或完整 epoch，对比训练曲线和动态行为。
-
-| 对齐点 | 距离函数 | 参考阈值 |
-|--------|----------|----------|
-| Loss 曲线 | 平均相对误差 + 最大绝对偏差 | 平均相对误差 < 5% |
-| 收敛速度 | step 数比值 | 偏差 < 10% |
-| 训练稳定性 | loss 方差比 + grad norm 曲线 | 无异常震荡或发散 |
-| 优化器状态 | state_dict 逐项对比 | 完全一致 |
-
-#### Layer 3：最终结果对齐（宏观）
-
-完整训练后，对比最终模型质量。
-
-| 对齐点 | 距离函数 | 参考阈值 |
-|--------|----------|----------|
-| 任务指标 | 任务相关（accuracy / F1 / BLEU 等） | 在多次运行自然波动范围内 |
-| 最终权重 | cosine sim + max abs diff | cosine > 0.99 |
-| 泛化一致性 | 指标分布差异 | 无系统性偏差 |
-
-```
-Layer 1 单步对齐 ── 通过 ──→ Layer 2 过程对齐 ── 通过 ──→ Layer 3 最终结果
-      │                            │                            │
-    不通过                        不通过                        不通过
-      ↓                            ↓                            ↓
-  逐层二分定位问题算子        检查超参/数据一致性         检查累积误差/随机性
-```
-
-## 确定性保证
-
-NPU 结果必须可复现。推理和训练各有侧重：
-
-**推理**：若结果不可复现，排查：随机性未关闭、JIT 编译引入不确定性、NPU 内部格式转换引入偏差。
-
-**训练**（确定性要求更严格，是单步对齐的前提）：
-- 固定所有随机种子：`random.seed()` / `np.random.seed()` / `torch.manual_seed()` / `torch.npu.manual_seed_all()`
-- `torch.backends.cudnn.deterministic = True`，关闭 `benchmark`
-- `torch.use_deterministic_algorithms(True)`（如适用）
-- DataLoader 设置 `worker_init_fn` 固定各 worker 种子
-- NPU 侧关闭私有格式等可能引入差异的配置（如 `FLAGS_npu_storage_format=0`）
-- 确认 NPU 确定性计算模式已开启
-
-## 常见误区
-
-1. 只验证第一步就判定精度正确——某些 bug 只在后续步骤暴露
-2. 将浮点累积偏差误判为 bug——关键看 diff 增长是否平滑
-3. 与优化后的模型自己对比——必须与原始未优化的 baseline 对比
-4. 只看平均指标——必须关注 worst case
-5. 对离散输出要求 bit-exact——自回归/随机采样中不可能
-6. 未确认基线就写对比脚本——基线来源不对，整个结论无效
-7. 看到 mismatch 后临时放宽阈值——阈值必须在比较前声明
-8. 用像素级 diff 衡量图片等价——应使用感知级度量（LPIPS/FID）
-9. 只比模型直接输出，忽略下游功能指标——当输出到消费间有随机性时直接输出等价不保证下游等价
-10. 训练场景只看 loss 曲线——必须同时验证单步梯度和最终模型质量
-
-## 参考资料索引
-
-| 文件 | 加载时机 |
-|------|----------|
-| [baseline_policy.md](references/baseline_policy.md) | 需要确认基线来源或向用户询问时 |
-| [equivalence_verification.md](references/equivalence_verification.md) | 单次等价替换后需要即时验证时 |
-| [model_family_hints.md](references/model_family_hints.md) | 需要按模型类型确定验证边界和度量时 |
-| [debugging_guide.md](references/debugging_guide.md) | 验证未通过，需要定位精度问题时 |
-
-如果项目输出格式特殊（如 npy、自定义二进制、非标准日志），agent 应根据上述设计原则编写项目专用的对比工具。
+等价替换的局部门禁见 [equivalence_verification.md](references/equivalence_verification.md)。

@@ -1,86 +1,114 @@
 ---
 name: npu-optimization-implementation
-description: 优化实施：用去重/复用/掩盖/替换四维度框架实施性能优化。当用户需要实施优化方案、融合算子、预分配 buffer、图编译、flat forward、或换等价实现时触发。
+description: 自动实施 Phase 2 产生的统一 NPU 优化候选；按去重、复用、掩盖、替换四维度和分级实现阶梯选择方案，执行可回滚 trial、低成本门禁、消融和性能测量。用于官方 NPU 算子替换、融合、work-domain/精度/layout 修复、缓存、图编译、调度和自定义 kernel。
 ---
 
-# NPU 优化实施
+# Phase 3：自动优化实施
 
-## 定位
+输入必须符合 [Candidate Contract](../02_bottleneck_analysis/references/candidate_contract.md)。候选来自 Line A/B/T 使用同一验证与采纳流程；Line T 候选额外携带 Teacher method guideline，用于缩小 NPU adaptation 的搜索空间。
 
-本阶段承接 Profiling 分析（02）的结论，将定位到的瓶颈点转化为具体的优化方案并实施。
+## 1. 选择 Action 或 Bundle
 
-核心流程：Profiling 定位瓶颈 → 基于四维度选择优化手段 → 方案经用户确认后实施 → 验证精度和性能 → 用户确认后提交。
+按以下顺序处理：
 
-## 优化四维度
+1. 过滤依赖未满足、证据为 C 且无法低成本补证、或收益上限低于噪声的候选；
+2. 重算 priority；
+3. 选择最高价值且互不冲突的 Action；
+4. 高收益、低风险、机制兼容的 Action 可组成 bundle；
+5. dtype/rounding、loss/backward、optimizer、communication、state/lifetime 和 custom kernel 默认隔离。
 
-所有性能优化手段本质上只做四件事：
+每个 Action 建立独立 trial ID、父 iterative baseline、代码 diff、命令、环境、预测收益和失败 predicate。
 
-| 维度 | 核心问题 | 典型现象 |
-|------|---------|---------|
-| **去重** | "这个工作是必要的吗？能和相邻工作合并吗？" | 同类算子调用次数异常多；存在可合并的独立调用 |
-| **复用** | "这个结果/资源之后还会被需要吗？" | 相同尺寸 tensor 反复分配释放；同一计算结果被重复计算 |
-| **掩盖** | "这段延迟能和其他工作并行吗？" | 通信和计算串行排列；计算流中有可填充的空泡 |
-| **替换** | "同样的结果有没有硬件更便宜的等价写法？" | 某算子落 AI_CPU；一组拆解算子有官方融合算子；某 API 有 NPU 更友好的等价表达 |
+## 2. 四维度选择机制
 
-前三者改变工作量/工作方式，第四者改变同一工作的物理执行路径——它们正交，可组合。
+四个维度是问题分类，不是固定实现：
 
-每个维度的详细原理、具体手段和代码模式见对应 reference (**必读**)：
+| 维度 | 核心问题 | 按需读取 |
+|---|---|---|
+| 去重 | 工作是否必要，能否合并或缩小 work-domain | [eliminate_redundancy.md](references/eliminate_redundancy.md) |
+| 复用 | 结果、buffer、weight、saved tensor 能否跨调用复用 | [reuse_and_precompute.md](references/reuse_and_precompute.md) |
+| 掩盖 | 不可消除延迟能否与计算/通信重叠 | [hide_latency.md](references/hide_latency.md) |
+| 替换 | 是否有 NPU 更友好的等价实现 | [equivalent_substitution.md](references/equivalent_substitution.md) |
 
-| 维度 | Reference | 核心内容 |
-|------|-----------|---------|
-| 去重 | [eliminate_redundancy.md](references/eliminate_redundancy.md) | 合并调用、消除冗余、清理框架开销 |
-| 复用 | [reuse_and_precompute.md](references/reuse_and_precompute.md) | 预计算缓存、预分配 buffer、原地操作 |
-| 掩盖 | [hide_latency.md](references/hide_latency.md) | 通信-计算重叠、双 buffer 流水、图编译 |
-| 替换 | [equivalent_substitution.md](references/equivalent_substitution.md) | NPU 融合算子、换等价 API、换算法 |
+始终扫描 [npu_checklist.md](references/npu_checklist.md) 中与当前热路径相关的已知问题。decode 或多卡负载分别按需读取 [decode_optimization.md](references/decode_optimization.md) 和 [parallel_design.md](references/parallel_design.md)。
 
-## 场景专用 Reference
+GPU Teacher 的算法、eliminated/fused/work-domain/layout/reuse/precision/schedule 方法映射到上述维度。先验证其成立条件，再优先尝试语义等价的 NPU 翻译；不得复制 GPU-specific kernel 指令或未经证明的硬件参数。
 
-以下文件按场景条件加载，不强制读取：
+## 3. 实现阶梯
 
-| Reference | 加载条件 | 核心内容 |
-|-----------|---------|---------|
-| [npu_checklist.md](references/npu_checklist.md) | 始终加载 | NPU 已知性能陷阱的 grep 扫描清单 |
-| [npu_operator_catalog.yaml](references/npu_operator_catalog.yaml) | 替换维度层 1 时加载 | 融合算子目录（被 equivalent_substitution.md 引用） |
-| [decode_optimization.md](references/decode_optimization.md) | 自回归 decode 场景 | KV cache 预分配、EOS 检查降频、消除 per-step 冗余 |
-| [parallel_design.md](references/parallel_design.md) | 多卡并行场景 | 切分维度选择、通信原语选型、并行区域设计 |
+默认从低成本、低维护风险向上搜索：
 
-## 通用原则
+1. 删除、缓存、预计算、修复 porting gap；
+2. 官方 NPU native/fused/sparse API 或参数；
+3. 代数、layout、storage、precision boundary 或 API 改写；
+4. graph boundary、functionalization、selective compile；
+5. buffer、stream、collective schedule、custom autograd/saved tensor；
+6. custom kernel。
 
-- 每次优化后重新 Profiling，确认瓶颈是否转移
-- GPU 最优实践在 NPU 可能反效果，必须实测验证
-- 保留原始实现供 fallback
-- 权重修改须保持 checkpoint 可加载且数值等价：默认保持 state_dict key/结构不变；当结构性融合必须改变结构时，须提供与模型同处的确定性重映射函数并通过等价性验证（详见 [reuse_and_precompute.md](references/reuse_and_precompute.md)「Checkpoint 兼容性」）
-- 优化尝试失败也要记录（what + why + 实际效果），避免重复踩坑
-- **四维度逻辑正交 + NPU 硬件耦合**：四个维度（去重/复用/掩盖/替换）在逻辑层面正交——它们各自回答不同的优化问题（见上表）。但在 NPU 上，维度间通过**内存分配模式**和**异步流水线**（`TASK_QUEUE_ENABLE=2`）产生硬件耦合：任何改变操作数量或操作顺序的优化（去重/替换），都可能改变 NPU 异步流水线的重叠模式，导致预期外的性能回退。
-  - "一个方向的逻辑失败不影响其他方向"——逻辑层面仍然成立，不要因一个替换方案失败就放弃独立的去重方案
-  - "但任何改变操作序列的优化必须用 L0 端到端 benchmark 验证"——不能只看 profiling 中的算子级数据，因为异步流水线的重叠效果只在端到端时间中体现
-  - 若优化导致端到端回退但 profiling 显示算子级改善，根因是异步流水线耦合——记录此发现，可考虑通过自适应阈值（如不同输入规模用不同实现）规避
-- **深度优先于广度**：对每个优化方向，穷尽探索（多种实现、完整验证）比浅尝多个方向更有价值。如果环境支持子 agent，建议对独立的方向/算子 spawn 子 agent 逐个深挖，避免因同时处理太多方向而浅尝辄止
+Teacher 已给出 guideline 时，不从空白重新发散：先测试 Candidate 中的 NPU adaptation options；只有不适用、失败或收益不足时才扩展搜索。方法相同不代表实现相同，NPU 侧仍按本阶梯选择官方 API、图编译、调度或 kernel。
 
-## 方向放弃标准（分级）
+官方实现失败不自动触发 custom kernel。只有剩余 exposed gain、成功概率和长期维护价值足以覆盖成本时才升级。
 
-放弃一个优化方向前，须满足该方向所属级别的全部条件：
+查询官方算子时先读 [npu_operator_catalog.yaml](references/npu_operator_catalog.yaml)，再用当前环境和官方文档验证签名、dtype、shape、layout、版本和训练/反向支持。目录中的经验不得脱离版本直接当事实。
 
-**Level 1 — 微调级**（改参数 / flag / 跳过单步操作 / 1-3 行代码改动）
-- A/B benchmark 对比（优化前 vs 优化后，同一输入，≥3 次取中位数）
-- 记录：改动描述、耗时对比、慢/无效的原因
-- 如回退，一句话说明原因即可（如"异步流水线耦合导致回退 +0.8ms"）
+## 4. Trial 执行
 
-**Level 2 — 替换级**（换等价实现 / 融合算子 / 改数据流路径）
-- 至少 1 种实现（框架提供或自定义均可）
-- Level 1 精度验证（代表性样本，快速检查）
-- A/B benchmark 对比
-- 记录：实现描述、精度结果、耗时对比、失败原因归类（概念错误 / 框架 overhead / 硬件不友好 / 异步流水线耦合）
-- 如仅有框架实现且失败，须尝试 1 种自定义实现后才可放弃
+每个 trial：
 
-**Level 3 — 架构级**（重写算子 / 改变计算图结构 / 需要 checkpoint 重映射）
-- 至少 2 种实现（1 框架 + 1 自定义/bare）
-- 每种实现经过微基准 → 小样本 → 全量三步验证
-- 每步记录具体数值（微基准 diff、小样本精度、全量耗时）
-- 失败原因归类（概念错误 / 框架实现 overhead / 硬件不友好 / 其他）+ 是否尝试过调整参数重试（如换 dtype、换 shape、换输入顺序）
-- 若失败原因为"框架实现 overhead"：自定义实现是强制要求——只有自定义实现也失败后才能放弃
+1. 从 accepted iterative commit 派生；
+2. 先写静态 semantic/precision/work-domain 断言；
+3. 实施最小可验证改动；
+4. 运行 Phase 4 指定的最低成本正确性门；
+5. 使用匹配 regime 的 microbenchmark 或低开销 step timing 测分布；
+6. 根据结果标记 accepted、rejected、inconclusive 或 blocked；
+7. accepted 才能更新 iterative baseline。
 
-**通用规则**（所有级别）：
-- "我觉得不会通过"（未实测）始终为不合理放弃原因
-- "diff 看起来有点大"（未量化）始终为不合理放弃原因
-- 优化方向逻辑正交——一个方向的失败不连带放弃独立方向（见通用原则"四维度逻辑正交 + NPU 硬件耦合"）
+代码能运行不代表接受。性能改善必须超过测量噪声，且无实质性 precision、memory、regime 或 rank 回退。
+
+## 5. Bundle 规则
+
+可合并：
+
+- 删除稳定冗余；
+- 缓存/预计算常量；
+- 修复官方 API 参数和有效 work-domain；
+- 不改变数值顺序的 layout/view；
+- 独立的 host sync 清理。
+
+默认不合并：
+
+- 改变 accumulator/rounding；
+- loss/backward/optimizer；
+- in-place alias 和 saved-tensor lifetime；
+- collective ordering；
+- selective compile 边界；
+- custom kernel。
+
+每项保留独立 commit、开关或 patch，bundle 必须能做消融。
+
+## 6. 放弃与失败知识
+
+放弃方向需要可复现依据，但不强制穷举自定义实现。
+
+合理依据包括：
+
+- 正确性合同证明不可等价；
+- 当前平台/API 明确不支持；
+- microbenchmark 与真实负载均无收益或回退；
+- 保守 exposed gain 小于噪声/成本；
+- 与更高价值候选冲突；
+- 内存、编译或维护风险超过收益。
+
+记录准确 predicate：环境、regime、shape、dtype、API 参数、实现、性能和重新打开条件。不要把局部失败泛化成“该方向永远不可用”。
+
+## 7. 与重新 Profiling 的关系
+
+每个 Action 后执行低开销计时，但不默认采新 L1。当前 backlog 仍有显著候选时继续 Phase 3。
+
+以下情况返回 Phase 2：
+
+- backlog 已处理；
+- 优先候选收益均落在噪声内；
+- 新热点无法解释；
+- graph/dtype/layout/state/memory/communication 变化使旧证据失效；
+- 实测收益或回退显著超出预测区间。
