@@ -57,6 +57,8 @@ Line T 额外回答：
 - 当前 NPU 是否仍在为对应工作付出关键路径时间；
 - 哪些机制可直接迁移，哪些只适用于 GPU；同一意图在 NPU 上应走哪一级实现路径。
 
+Line T 分别产出 `source_direct`、`compile_method` 和 `runtime_gap` claim。强 source-port gap 可在精确 NPU exposed time 未完成时生成 provisional candidate；Line B 的 timing 用于排序、收益置信度和最终采纳，不用于抹掉已由语义证据成立的候选。
+
 Line T 必须输出 Supernode 表和带 method guideline 的 Action Sheet，不直接修改代码。
 
 ## 合并三条线
@@ -76,7 +78,7 @@ Line T 必须输出 Supernode 表和带 method guideline 的 Action Sheet，不�
 
 - A/B 已执行；T 的路由决定和证据状态已记录；
 - 每个显著发现都有候选或证据化排除；
-- 每个候选包含目标 gap、regime、关键路径收益上限、证据、实现路径、成本、风险和验证门；
+- 每个候选包含目标 gap、regime、证据、实现路径、成本、风险和验证门；直接收益已测量/保守估计，或对 source-direct 明确标记 unmeasured 并给出最小计时动作；
 - 候选已去重、处理依赖/冲突，并完成全局排序；
 - evidence_db/candidates.csv 或等价 JSONL 已写入。
 

@@ -1,6 +1,15 @@
-# evidence_db Schema v2
+# evidence_db Schema v3
 
-evidence_db 是 model_opt 的统一状态与证据层。Profiling-only、GPU Teacher 和 hybrid 路线使用同一目录；未启用 Teacher 时对应字段写 not_applicable。
+`evidence_db` 是 Profiling-only、GPU Teacher 和 hybrid 路线共用的状态与证据层。未启用 Teacher 时，对应字段写 `not_applicable`；不要维护两套 campaign 数据。
+
+## 内容索引
+
+- 目录
+- Campaign 与 Regime
+- Artifact、Coverage 与读取
+- Claim Evidence Map
+- Teacher Gate、Semantic Diff、Supernodes 与 Candidates
+- Normalized Runtime、Trial、Findings 与停止
 
 ## 目录
 
@@ -9,82 +18,126 @@ evidence_db 是 model_opt 的统一状态与证据层。Profiling-only、GPU Tea
 ├── campaign.yaml
 ├── regimes.yaml
 ├── artifacts.jsonl
+├── coverage.csv
 ├── evidence_read_ledger.csv
+├── claim_evidence_map.csv
 ├── teacher_gate.json
+├── semantic_diff.md
 ├── supernodes.csv
 ├── candidates.csv
+├── normalized/
+│   ├── phase_summary.csv
+│   ├── rank_imbalance.csv
+│   ├── operator_summary.csv
+│   ├── kernel_summary.csv
+│   ├── communication_summary.csv
+│   └── memory_summary.csv
 ├── trials/
 │   └── <trial_id>.yaml
 ├── findings.jsonl
 └── stop_audit.yaml
 ~~~
 
-raw profiling、graph、IR 和生成代码不复制进 evidence_db，只登记不可变路径与 identity。
+raw profiling、graph、IR 和 generated code 不复制进 evidence_db，只登记不可变路径、identity 和实际读取范围。
 
-## campaign.yaml
+## Campaign 与 Regime
 
-至少包含：
+`campaign.yaml`：
 
-- schema_version、campaign_id；
-- workload、semantic revision、training/inference mode；
-- accuracy/performance/iterative baseline；
-- correctness metric、方向、阈值、自然波动；
-- NPU/GPU hardware、software、world size 和关键环境变量；
-- source repository、优化分支、baseline commit；
-- objective 和 full-run command。
+- schema_version、campaign_id、workload、semantic revision；
+- training/inference mode、objective、full-run command；
+- accuracy/performance/iterative baseline、阈值与自然波动；
+- NPU/GPU hardware、software、world size、environment ID；
+- source repository、优化分支、baseline commit。
 
-## regimes.yaml
+`regimes.yaml` 每个 regime：
 
-每个 regime：
-
-- id、触发条件和 transition；
+- id、触发条件、transition；
 - shape/dtype/layout/work-domain；
 - batch/累积、forward/backward/optimizer/state；
 - expected occurrences 或完整任务权重；
 - rank/world size；
 - accuracy/performance coverage；
-- GPU/NPU 匹配状态。
+- GPU/NPU mapping 状态。
 
-只有 batch 相同不代表同一 regime；work-domain、精度、控制流、state 或 communication 改变时拆分。
+batch 相同不代表 regime 相同；work-domain、precision、control flow、state 或 communication 改变时拆分。
 
-## artifacts.jsonl 与读取账本
+## Artifact、Coverage 与读取
 
-artifact 字段：
+`artifacts.jsonl`：
 
-artifact_id, backend, kind, path, identity, source_revision, environment_id, regime, rank, steps, notes
+`artifact_id, backend, kind, path, identity, source_revision, environment_id, regime, rank, steps, producer, notes`
 
-读取账本字段：
+`coverage.csv` 每个 `(backend, regime, rank)`：
 
-artifact_id, read_status, read_scope, read_method, extracted_facts, claim_ids, limitations, read_at
+`compiled_warm, light_steps, deep_steps, trace, ops, kernels, communication, shapes, stack, memory, graph, selection_reason, artifact_refs, limitations`
 
-文件存在、索引存在和实际读取必须区分。
+`evidence_read_ledger.csv`：
 
-## teacher_gate.json
+`artifact_id, read_status, read_scope, read_method, parser_version, extracted_facts, claim_ids, limitations, read_at`
 
-未启用 Teacher 时记录 route=profiling_only。启用时记录：
+文件存在、索引存在、实际读取和 claim 使用必须区分。
 
-- user requirement；
-- route 和 hard-condition；
-- eligible/unavailable regime；
-- signal、gain 和 evidence gap；
-- fallback 与 capture request。
+## Claim Evidence Map
 
-## supernodes.csv
+`claim_evidence_map.csv`：
 
-仅 teacher_auto/teacher_required/teacher_hybrid 强制。每行保存 semantic contract、source_port_gap、teacher pre/post、compile delta、NPU current、regime frequency、exposed gain、evidence 和 Candidate refs。
+`claim_id, supernode_id, claim_type, claim, regime_scope, rank_scope, supporting_artifact_ids, contradicting_artifact_ids, required_but_unread_ids, source_port_or_compile_delta, evidence_grade, confidence, next_minimum_read`
 
-完整字段见 Phase 2 GPU Teacher 的 supernode_alignment.md。
+`claim_type` 至少支持：
 
-## candidates.csv
+- `source_direct`：source-port semantic/API/precision/work-domain gap；
+- `compile_method`：GPU pre/post 证明的方法 guideline；
+- `runtime_gap`：NPU current profile 证明的 residual/critical-path gap；
+- `hardware_residual`：其他类别排除后的硬件残差。
 
-遵循 Phase 2 Candidate Contract。必须能从 candidate 回到 source/profile/teacher artifact，并能映射到 trial。Teacher 候选额外保存 `teacher_method_guideline`、`transferable_mechanism`、成立条件、GPU-specific exclusions 和按优先级排列的 `npu_adaptation_options`。
+一个候选可引用多个 claim。反证必须进入结构化字段，不能只写 notes。
 
-## trials/<trial_id>.yaml
+## Teacher Gate 与 Semantic Diff
+
+`teacher_gate.json`：
+
+- route、user requirement、pack hard conditions；
+- eligible/partial/unavailable regime；
+- signal IDs/classes、measured/unmeasured gain；
+- coverage/provenance gap；
+- fallback、capture request、next minimum evidence。
+
+`semantic_diff.md` 保存 common/GPU/NPU source 对比，并把每项分类为 `semantic`、`porting_artifact`、`backend_requirement` 或 `unknown`。
+
+## Supernodes 与 Candidates
+
+`supernodes.csv` 每个 `(regime_id, supernode_id, mapping_variant)` 一行，保存：
+
+- semantic/tensor/precision/work-domain contract；
+- source_port_gap、Teacher pre/post、compile delta、method guideline；
+- NPU current、`npu_extra`、frequency、rank 与 exposed gain；
+- supporting/contradicting claim、risk、Candidate refs 和 failure signature。
+
+完整字段见 [Supernode 对齐](../02_bottleneck_analysis/gpu_teacher/references/supernode_alignment.md)。
+
+`candidates.csv` 遵循 [Candidate Contract](../02_bottleneck_analysis/references/candidate_contract.md)，必须能回到 mapping、claim、artifact 和 trial。Teacher 候选保存 signal class、method guideline、transferable mechanism、GPU-specific exclusions、NPU adaptation options、direct/enabling gain、negative control 和 next minimum evidence。
+
+## Normalized Runtime
+
+`normalized/` 保存可重建的派生表；每行包含 artifact ID、capture identity 和 generator/version：
+
+- phase_summary：regime/rank median/p95 与 step accounting；
+- rank_imbalance：critical rank、spread 与因果 interval；
+- operator/kernel summary：semantic mapping、count/time、tensor/runtime 字段；
+- communication summary：payload、total/non-overlap/skew；
+- memory summary：peak/churn/materialization/saved-tensor lifetime。
+
+## Trial
+
+`trials/<trial_id>.yaml`：
 
 ~~~yaml
 trial_id:
 parent_baseline:
 candidate_ids: []
+claim_ids: []
+mapping_refs: []
 git:
   branch:
   parent_commit:
@@ -94,21 +147,26 @@ environment_id:
 regime_scope: []
 prediction:
   weighted_exposed_gain:
+  enabling_gain:
   assumptions: []
+  next_minimum_evidence:
 implementation:
   files_modified: []
   summary:
+  npu_adaptation_option:
 validation:
   static:
   operator:
   layers:
   gradient_state:
+  negative_control:
   weighted_short_run:
   full_run:
 performance:
   baseline_ref:
   distribution:
   per_regime:
+  per_rank:
   memory:
 decision:
   status:
@@ -120,28 +178,16 @@ evidence_refs: []
 
 accepted、rejected、inconclusive 和 blocked 均必须记录。
 
-## findings.jsonl
+## Findings 与停止
 
-存放可迁移或版本特定发现：
+`findings.jsonl` 保存 mechanism、workload/tensor/regime signature、environment validity、source/graph/profile evidence、accepted/rejected result、failure signature、transferability、confidence 和重新验证条件。
 
-- mechanism；
-- workload/tensor/regime signature；
-- hardware/software validity；
-- source/graph/profile evidence；
-- accepted/rejected result；
-- failure signature；
-- transferable、workload-specific 或 platform-version-specific；
-- confidence 和重新验证条件。
-
-算子参数、CANN 行为和版本限制不得脱离环境传播为通用规则。
-
-## stop_audit.yaml
-
-包含：
+`stop_audit.yaml` 保存：
 
 - regime/rank/correctness/full-run coverage；
 - remaining gap 与 exposed-gain 上限；
-- 未测候选和原因；
+- 未测高置信候选、source-direct unmeasured 候选和原因；
 - 最近两次 wave/profile；
-- best commit 与复现命令；
-- 停止或阻塞结论。
+- best commit、复现命令与停止/阻塞结论。
+
+算子参数、compiler 行为和版本限制不得脱离 environment 传播为通用事实。

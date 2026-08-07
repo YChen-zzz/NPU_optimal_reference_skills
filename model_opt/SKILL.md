@@ -11,7 +11,7 @@ description: 自动优化昇腾 NPU 上的训练、推理或科学计算负载�
 
 1. 先锁定语义、精度、评测合同和 execution regime，再解释性能。
 2. Line A 源码分析和 Line B NPU Profiling 始终执行；满足路由条件时增加 Line T GPU Teacher。
-3. GPU Teacher 同时提供差距证据和已验证的方法先验；迁移优化机制，不照搬 GPU kernel，并用 NPU 实测决定是否采纳。
+3. GPU Teacher 同时提供 source-port gap、compile method guideline 和 runtime gap；迁移优化机制，不照搬 GPU kernel，并用 NPU 实测决定优先级与采纳。
 4. 所有路线输出同一 Candidate Contract；Phase 3、4、5 不区分候选来源。
 5. 候选按加权关键路径收益、证据、可行性、正确性风险和实现成本排序。
 6. 使用可回滚 iterative baseline；失败试验保留证据，但不进入当前最佳分支。
@@ -43,6 +43,8 @@ Line T  GPU Teacher：恢复 source-port gap、GPU 已用方法与 compile 意�
 ```
 
 当用户明确要求使用 GPU Teacher，Line T 为必选；当 evidence pack 可用且门控通过时自动启用；其余情况运行 Line A+B。Line T 细则位于 [GPU Teacher 分析](02_bottleneck_analysis/gpu_teacher/SKILL.md)。
+
+强 source-port semantic gap 不等待精确 Profiling 才能成为候选；它以 unmeasured/provisional 状态进入低成本补证或试验。NPU Profiling 负责关键路径定量、全局排序和最终性能验收。
 
 Phase 2 结束条件不是“列出想法”，而是每个候选均满足 [Candidate Contract](02_bottleneck_analysis/references/candidate_contract.md)，并完成显著信号的候选或证据化排除。
 

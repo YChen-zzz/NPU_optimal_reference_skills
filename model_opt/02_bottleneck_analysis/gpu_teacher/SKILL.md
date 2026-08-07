@@ -1,6 +1,6 @@
 ---
 name: npu-gpu-teacher-analysis
-description: Phase 2 的条件分析子技能；读取已编译并 warmup 的 GPU Teacher source、graph/IR/code 和 profile，与当前 NPU source/profile 按 execution regime 和 semantic Supernode 对齐，识别 source-port gap 与 GPU compile 意图并生成统一 NPU 优化候选。当用户要求 GPU Teacher、提供 GPU profiling/compiled graph，或主 npu-model-optimization 路由启用 Line T 时使用。
+description: Phase 2 的条件分析子技能；读取 GPU/common/NPU source、已编译 GPU graph/IR/code/profile 和当前 NPU evidence，按 execution regime 与 semantic Supernode 恢复 source-direct gap、compile method guideline 和 runtime gap，再生成可审计的 NPU adaptation 候选。当用户要求 GPU Teacher、提供 GPU profiling/compiled graph，或主 npu-model-optimization 路由启用 Line T 时使用。
 ---
 
 # Line T：GPU Teacher 分析
@@ -9,9 +9,9 @@ description: Phase 2 的条件分析子技能；读取已编译并 warmup 的 GP
 
 ## 1. 运行门控
 
-读取 [teacher_gate.md](references/teacher_gate.md)，记录 teacher_required、teacher_auto、teacher_hybrid 或 teacher_unavailable。
+读取 [teacher_gate.md](references/teacher_gate.md)，记录 teacher_required、teacher_auto、teacher_hybrid 或 teacher_unavailable，并分别判断 `source_direct`、`compile_method` 和 `runtime_gap`。
 
-GPU evidence pack 默认由 GPU 机器离线提供。缺失时生成 capture request，不假设 NPU 机器能连接 GPU 机器。采集要求见 [teacher_evidence.md](references/teacher_evidence.md)。
+GPU evidence pack 默认由 GPU 机器离线提供。缺失时生成 capture request，不假设 NPU 机器能连接 GPU 机器。证据合同见 [teacher_evidence.md](references/teacher_evidence.md)，实际读取顺序与 claim 账本见 [evidence-reading.md](references/evidence-reading.md)。
 
 ## 2. 锁定可比范围
 
@@ -24,7 +24,7 @@ GPU evidence pack 默认由 GPU 机器离线提供。缺失时生成 capture req
 - GPU compiled/warm 状态；
 - NPU 匹配 profile 与出现频率。
 
-语义关键字段未知时不得把该 regime 提升为强 Teacher 信号。
+语义关键字段未知时不得把该 regime 提升为强 compile/runtime Teacher 信号；但已定位、正确性合同明确的 source-port gap 可作为 `source_direct` provisional candidate。
 
 ## 3. 恢复三类监督信号
 
@@ -45,7 +45,7 @@ source
 → compiled runtime
 ~~~
 
-文件存在不等于已读。实际读取范围、提取事实和不能证明的内容写入 evidence ledger。
+文件存在不等于已读。实际读取范围、支持/反驳事实、尚未读取的必要证据和不能证明的内容写入 evidence ledger 与 claim map。
 
 ## 4. 建立 Supernode
 
@@ -56,7 +56,9 @@ source
 | Supernode | 原始语义与 regime | 精度合同 | GPU 编译前 | 编译前 GPU↔NPU Gap | GPU 编译后 | GPU Compile 做了什么 | NPU 当前（source + runtime） | 剩余 Gap | 证据/置信度 |
 |---|---|---|---|---|---|---|---|---|---|
 
-每个 NPU extra cast/copy/transdata/materialization/sync/graph break 单独记录，不因 GPU 侧无同名 kernel 而忽略。
+每个 NPU extra cast/copy/transdata/materialization/sync/graph break 单独记录为 `npu_extra`，不因 GPU 侧无同名 kernel 而忽略。
+
+使用 [runtime-alignment.md](references/runtime-alignment.md) 将 Line B 的 all-rank/regime NPU evidence 映射到 Supernode，计算 exposed gain、rank imbalance 和 direct/enabling gain。Profiling 决定排序与收益置信度，不决定强语义 source-direct 候选能否存在。
 
 ## 5. 翻译方法并生成 Action Sheet
 
@@ -82,10 +84,14 @@ Line T 候选必须引用当前 NPU source 和 runtime：
 - 三线共同证明相同根因：合并并提高 evidence grade。
 - 同名 fused op 但 work-domain、dtype、saved tensor 或 schedule 不同：不得判等价。
 
-Line T 结束时写入 teacher_gate.json、supernodes.csv、证据账本和统一 candidates。
+Line T 结束时写入 teacher_gate.json、coverage.csv、supernodes.csv、evidence ledger、claim map 和统一 candidates。
 
 ## 7. 重新对齐
 
 一次 Teacher 对齐应支撑多个 Action。当前 backlog 仍有显著收益时不重新读取全部 GPU pack。
 
 仅在主流程判定收益停滞、当前 Supernode map 无法解释新热点，或 graph/dtype/layout/state/communication 变化使旧证据失效时，采新 NPU profile 并做 residual Teacher alignment。GPU source/compiler/regime 未改变时复用原 Teacher pack。
+
+## 8. 条件回归
+
+只在处理 NanoGPT 历史 evidence pack 或评估本 Skill 的历史机会召回能力时读取 [nanogpt-regression.md](references/nanogpt-regression.md)。不得把其中的 step、API 或历史 winner 当作新 workload 默认配方。

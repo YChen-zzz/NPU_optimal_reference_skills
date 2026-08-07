@@ -11,13 +11,15 @@ description: 自动实施 Phase 2 产生的统一 NPU 优化候选；按去重�
 
 按以下顺序处理：
 
-1. 过滤依赖未满足、证据为 C 且无法低成本补证、或收益上限低于噪声的候选；
+1. 过滤依赖未满足、证据为 C 且无法低成本补证、或已测收益上限低于噪声的候选；
 2. 重算 priority；
 3. 选择最高价值且互不冲突的 Action；
 4. 高收益、低风险、机制兼容的 Action 可组成 bundle；
 5. dtype/rounding、loss/backward、optimizer、communication、state/lifetime 和 custom kernel 默认隔离。
 
 每个 Action 建立独立 trial ID、父 iterative baseline、代码 diff、命令、环境、预测收益和失败 predicate。
+
+A/强 B 的 `source_direct` 若正确性风险和试验成本低，即使 exposed gain 尚未精确测量，也可进入独立 exploratory trial；必须先声明 negative control 和最小计时动作，不与高风险 bundle 合并，且无 NPU 性能证据时不得 accepted。
 
 ## 2. 四维度选择机制
 
@@ -84,7 +86,7 @@ Teacher 已给出 guideline 时，不从空白重新发散：先测试 Candidate
 - selective compile 边界；
 - custom kernel。
 
-每项保留独立 commit、开关或 patch，bundle 必须能做消融。
+每项保留独立 commit、开关或 patch，bundle 必须能做消融。`enabling_gain` 只用于依赖和解锁排序，不与直接 wall-clock gain 相加。
 
 ## 6. 放弃与失败知识
 

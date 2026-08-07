@@ -10,21 +10,30 @@ Line A、Line B 和 Line T 必须输出同一种候选。Phase 3 不根据候选
 | source_lines | line_a、line_b、line_t 的一个或多个 |
 | semantic_role | 对应源码逻辑或 Supernode |
 | source_location | 文件、函数、行或可追溯 graph/source ref |
+| mapping_ref | Supernode/mapping variant；无 Teacher 时可为 not_applicable |
 | regime_scope | 适用和不适用的 regime |
 | problem | 当前执行了什么不必要或低效工作 |
 | root_cause | 为什么源码/后端产生该现象 |
 | gap_class | porting、elimination、fusion、work_domain、precision、layout、reuse、dispatch、sync、communication、memory、compiler_boundary 等 |
 | optimization_dimension | 去重、复用、掩盖、替换；允许多值 |
+| teacher_signal_class | source_direct、compile_method、runtime_gap；无 Teacher 时为 not_applicable |
 | teacher_method_guideline | GPU/common source 或 compiler 已采用的方法、作用对象和成立条件；无 Teacher 时为 not_applicable |
 | transferable_mechanism | 可迁移的机制、成立条件，以及不可直接迁移的 GPU-specific 部分 |
+| transfer_class | direct_port_fix、algorithmic、compiler_intent、schedule、hardware_specific 或 not_applicable |
+| teacher_method_confidence | 方法及成立条件的证据置信度；无 Teacher 时为 not_applicable |
 | npu_adaptation_options | 按实现阶梯排列的 NPU 适配方案；可包含多个备选 |
 | implementation_path | 下方实现阶梯中的一级 |
-| weighted_exposed_gain | 按 regime 频率和关键路径暴露量计算的保守收益区间 |
+| platform_support_evidence | NPU API/version、microbenchmark、graph/profile 或环境事实 |
+| weighted_exposed_gain | 按 regime 频率和关键路径暴露量计算的保守直接收益；允许 unmeasured |
+| enabling_gain | 内存、compile、fusion、batch 或 overlap 的间接使能价值；不得直接加到 wall-clock |
 | evidence_grade | A/B/C |
 | evidence_refs | source/profile/graph/IR/code/artifact ID |
+| contradicting_evidence_refs | 反证或不支持该方法的 artifact/claim |
 | difficulty | low/medium/high |
 | correctness_risk | 语义、数值、state、memory、multi-rank 风险 |
 | validation_gate | Phase 4 必须运行的最低门禁 |
+| negative_control | 最低成本的反例/消融，用于否证机制或错误归因 |
+| next_minimum_evidence | 当前证据不足时最小读取、instrumentation 或计时动作 |
 | dependencies、conflicts | 前置和互斥候选 |
 | status | proposed/blocked/accepted/rejected/inconclusive |
 
@@ -52,6 +61,8 @@ weighted_exposed_gain =
 
 GPU 时间不是 NPU floor。缺少精确 interval dependency 时使用保守 non-overlapped union。
 
+强语义 `source_direct` 在 NPU exposed time 未精确映射时仍可存在：`weighted_exposed_gain=unmeasured`，保留调用频率/粗上限和 `next_minimum_evidence`。它可以进入低成本、低风险 exploratory trial，但不能在无 NPU 性能证据时宣称收益或进入最终 accepted 状态。
+
 全局优先级：
 
 ~~~text
@@ -63,7 +74,7 @@ priority =
   / implementation_cost
 ~~~
 
-所有因子和估算依据必须落盘；不要只保存最终分数。
+所有因子和估算依据必须落盘；不要只保存最终分数。`enabling_gain` 单独用于解锁关系和依赖排序，不与直接 wall-clock gain 相加。
 
 ## 合并与 Bundle
 
