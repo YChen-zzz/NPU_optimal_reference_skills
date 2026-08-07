@@ -184,9 +184,12 @@ accepted、rejected、inconclusive 和 blocked 均必须记录。
 
 `stop_audit.yaml` 保存：
 
+- `stop_proposed` revision、提出原因和证据时间；
+- Stop Auditor 的 `continue/stop_allowed/blocked` 决定与 failed gates；
 - regime/rank/correctness/full-run coverage；
 - remaining gap 与 exposed-gain 上限；
 - 未测高置信候选、source-direct unmeasured 候选和原因；
+- uncovered gap、next candidate/minimum evidence 和 blocking predicate；
 - 最近两次 wave/profile；
 - best commit、复现命令与停止/阻塞结论。
 

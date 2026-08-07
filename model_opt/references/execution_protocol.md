@@ -90,15 +90,50 @@ accepted_for_iteration 自动提交到优化分支并更新 iterative baseline�
 
 Line T 已启用时，重新 Profiling 后做 residual Teacher alignment；GPU pack 未改变则复用，不重复采 GPU。
 
-## 停止审计
+## 停滞恢复
 
-停止前生成 stop audit：
+以下信号不得直接解释为“没有优化空间”：
 
-- regime/rank coverage；
-- accuracy、training dynamics 和 full-run 状态；
-- 各 gap family 的剩余 exposed gain；
-- 未测高置信候选和原因；
-- 最近 profile/wave 摘要；
-- 当前 best commit 与可复现命令。
+| 信号 | 状态与下一步 |
+|---|---|
+| 连续 wave 收益落在阈值或噪声内 | `stalled`：采当前 best 的 NPU L1，重新运行 Phase 2 |
+| Host gap 接近零 | `host_layer_exhausted`：关闭 Host 候选族，转向 graph/compiler/kernel/算法层 |
+| 当前候选全部失败或处理完 | `coverage_audit_required`：检查遗漏 Supernode、gap family、regime 和未走完的实现阶梯 |
+| Teacher backlog 用完 | `teacher_residual_required`：采新 NPU profile，复用 GPU pack 做 residual Teacher alignment |
+| 环境、权限或依赖无法继续 | `blocked_environment`：保存精确 blocker 与恢复条件，不得标记最优 |
+
+恢复流程必须产生新候选、最小补证动作或可审计的排除。不能只把旧候选重新排序。
+
+## Stop Proposal 与独立审计
+
+主 Agent 只能写入 `stop_proposed`，不得自行转为完成。可调用 subagent 时，必须启动一个独立、只读的 Stop Auditor；向它提供 current best revision、最新 NPU profile、Teacher manifest/pack、coverage、Supernode、candidate、trial、gap bound 和 full-run artifacts，不提供期望结论。
+
+Stop Auditor 的任务是反证停止主张：检查证据新鲜度、regime/rank/Supernode 覆盖、Teacher residual、未测候选、实现阶梯、失败 predicate 和剩余 exposed gain。输出固定为：
+
+~~~yaml
+decision: continue | stop_allowed | blocked
+failed_gates: []
+uncovered_gaps: []
+next_candidates: []
+next_minimum_evidence: []
+blocking_predicates: []
+~~~
+
+- `continue`：至少给出一个符合 Candidate Contract 的候选或最小补证动作；主 Agent 返回 Phase 2/3。
+- `blocked`：记录精确外部 blocker 与重新打开条件；不得写“已最优”。
+- `stop_allowed`：仅在以下停止门全部通过时允许。
+
+## 停止门
+
+停止前全部满足：
+
+- 最新 NPU profile 对应 current best revision；
+- Line T 启用时已完成 residual Teacher alignment；
+- regime/rank/Supernode 和 gap family coverage 完整；
+- 没有未处理的高置信或 `unmeasured source_direct` 候选；
+- 高价值候选已走完适用实现阶梯，或有精确失败/阻塞 predicate；
+- 各 gap family 的剩余加权 exposed gain 低于计时噪声或明确成本阈值；
+- accuracy、training dynamics、最终 full run 和复现命令通过；
+- Stop Auditor 返回 `stop_allowed`。
 
 预算耗尽、实现困难或单次失败只是暂停/阻塞理由，不等同于达到最优。

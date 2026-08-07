@@ -16,6 +16,7 @@ description: 自动优化昇腾 NPU 上的训练、推理或科学计算负载�
 5. 候选按加权关键路径收益、证据、可行性、正确性风险和实现成本排序。
 6. 使用可回滚 iterative baseline；失败试验保留证据，但不进入当前最佳分支。
 7. 沿当前 backlog 持续优化；收益停滞或证据失效后才重新采集高开销 Profiling。
+8. 主 Agent 不得直接宣布“没有优化空间”；只能提交 `stop_proposed`，并由独立 Stop Auditor 审计。
 
 ## Phase 1：准备
 
@@ -90,4 +91,6 @@ Phase 2 结束条件不是“列出想法”，而是每个候选均满足 [Cand
 - 新热点无法由当前 candidate/supernode map 解释；
 - graph、dtype、layout、memory、communication 或环境变化使旧证据失效。
 
-停止前必须完成 residual audit：所有 regime/rank 通过正确性与 coverage；没有未处理的高置信候选；剩余收益上限低于噪声或实施成本；最终 full run 可复现。详细自动状态机见 [执行协议](references/execution_protocol.md)。
+停滞信号只触发恢复流程，不直接终止：Host gap 接近零时转向 graph/compiler/kernel/算法层；候选全部失败时重做候选覆盖审计；Teacher backlog 用完时采当前 best 的 NPU profile 并做 residual Teacher alignment；环境不可用时标记 `blocked_environment`，不得声称已经最优。
+
+停止前必须完成 residual audit，并获得 Stop Auditor 的 `stop_allowed`。详细状态机与 subagent 合同见 [执行协议](references/execution_protocol.md)。

@@ -29,13 +29,21 @@ Tier 1 不需要精确——目的是给出物理极限的量级，不是精确�
 | < 5% | host 开销已极小 | 只能缩小 gap A：融合算子（减少 kernel 数量提升带宽利用率）、换算法、图编译、量化 |
 | 5%~15% | 两条路都有空间 | 按具体候选的反事实收益上限排序 |
 
-## 终局判断
+## 停滞与路由
 
-满足以下**任一**条件时，Python 层优化空间已耗尽：
+单个下界或失败信号只能关闭某类搜索空间，不能证明 workload 已经最优：
 
-1. `wall_clock / L0_Computing < 1.1`（gap B ≈ 0）——除非有缩小 gap A 的手段，否则停止
-2. gap A 主导（gap A / Tier 1 显著）且 gap B / Tier 3 < 5%——性能受限于 kernel 实现效率，需图编译/量化/换 CANN
-3. 连续 2 轮优化均 < 2% wall-clock 改进
-4. 所有候选被拒绝且无新候选产生
+| 信号 | 可得结论 | 强制动作 |
+|---|---|---|
+| `wall_clock / L0_Computing < 1.1` | Host gap 接近耗尽 | 转向 graph/compiler/kernel/算法层，继续分析 gap A |
+| gap A 主导且 gap B / Tier 3 < 5% | kernel/compiler efficiency 主导 | 检查融合、图编译、官方算子、work-domain、layout、精度与 custom kernel 上限 |
+| 连续 wave 收益低于阈值 | 当前观察或 backlog 停滞 | 采 current best NPU L1，重新生成候选 |
+| 当前候选全部失败或处理完 | 已有候选耗尽 | 做候选覆盖审计，不得等同全局空间耗尽 |
+| Teacher backlog 用完 | 当前 Teacher 翻译已处理 | 采新 NPU profile，并用原 GPU pack 做 residual Teacher alignment |
+| 环境无法执行候选 | 当前环境阻塞 | 标记 `blocked_environment` 和恢复 predicate，不得声称最优 |
 
-终局判断前必须穷尽 NPU 融合算子库——融合算子可同时缩小 gap A（减少 kernel 数量提升带宽利用率）和 gap B（减少 dispatch 次数），是 Python 层唯一能影响 gap A 的手段。"compute-bound 终局"判断前必须检查 host 开销来源（D2H 转换、格式转换、编译开销），不能仅看 utilization 数字。
+融合算子可同时缩小 gap A 和 gap B；“compute-bound”判断前仍须检查 D2H、格式转换、编译、work-domain 和碎片化 kernel，不能仅看 utilization。
+
+## 终局证明
+
+只有 [执行协议](execution_protocol.md) 的停止门全部通过，且独立 Stop Auditor 返回 `stop_allowed`，才能结束优化。`host_layer_exhausted`、`stalled`、`coverage_audit_required`、`teacher_residual_required` 和 `blocked_environment` 都不是终局。
