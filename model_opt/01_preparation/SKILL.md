@@ -47,7 +47,11 @@ execution regime 是会改变 graph、kernel、精度、工作域、状态或通
 
 在看到优化结果前声明距离函数、阈值、代表/边界输入和训练状态。比较脚本应离线可运行并保存机器可读结论。
 
-## 5. 发现 GPU Teacher Pack
+## 5. 建立快速验证入口
+
+首次 trial 前生成一个约 60 秒的可复现短跑：保留原 setting，只缩短总 step，并按比例映射 scheduler、regime 和 transition。保存短跑脚本、命令、原始 NPU val loss/质量与 wall-clock；后续 candidate 复用相同 seed、数据、初始状态和 step。无法建立时标记 `blocked_environment`，不得用 full run 代替首次验证。
+
+## 6. 发现 GPU Teacher Pack
 
 扫描用户提供路径、项目 manifest 和 evidence_db，只登记已存在的 GPU evidence pack：
 
@@ -58,7 +62,7 @@ execution regime 是会改变 graph、kernel、精度、工作域、状态或通
 
 标准模式不从 NPU 机器跨机采 GPU。这里只记录 pack path 或缺失状态；资格与信号强度由 Phase 2 的 [Teacher gate](../02_bottleneck_analysis/gpu_teacher/references/teacher_gate.md) 判断。
 
-## 6. Git 与产物安全
+## 7. Git 与产物安全
 
 - 记录当前 repository、branch、HEAD 和 dirty files；保护用户未提交修改。
 - 优先创建专用 optimize branch/worktree；无 Git 时在工作副本初始化。
@@ -69,4 +73,4 @@ execution regime 是会改变 graph、kernel、精度、工作域、状态或通
 
 ## 完成条件
 
-进入 Phase 2 前必须具备：workload/precision contract、regime map、一次可信 NPU baseline、accuracy baseline、NPU profile 状态、Teacher pack 状态、Git 安全点和可复现命令。缺少非关键证据时记录 limitation 并继续，不用人工确认替代可恢复的信息。
+进入 Phase 2 前必须具备：workload/precision contract、regime map、一次可信 NPU baseline、accuracy baseline、有效 NPU L1、约 60 秒短跑及其 baseline、Teacher pack 状态、Git 安全点和可复现命令。缺少任一必需产物时先补齐；环境无法生成时标记 `blocked_environment`。

@@ -25,6 +25,9 @@
 ├── semantic_diff.md
 ├── supernodes.csv
 ├── candidates.csv
+├── phase3_preflight.json
+├── preflight_receipts/
+│   └── <wave>-<stage>-<candidate>.json
 ├── normalized/
 │   ├── phase_summary.csv
 │   ├── rank_imbalance.csv
@@ -122,6 +125,8 @@ batch 相同不代表 regime 相同；work-domain、precision、control flow、s
 完整字段见 [Supernode 对齐](../02_bottleneck_analysis/gpu_teacher/references/supernode_alignment.md)。
 
 `candidates.csv` 遵循 [Candidate Contract](../02_bottleneck_analysis/references/candidate_contract.md)，必须能回到 mapping、claim、artifact 和 trial。Teacher 候选保存 signal class、method guideline、transferable mechanism、GPU-specific exclusions、NPU adaptation options、direct/enabling gain、negative control 和 next minimum evidence。
+
+`phase3_preflight.json` 登记有效 NPU L1、约 60 秒 baseline、高价值 Supernode Lab、候选与 API-first 状态。Phase 3 脚本校验后把 manifest hash 写入 `preflight_receipts/`；trial 和 accepted commit 必须引用对应 action receipt。
 
 ## Normalized Runtime
 

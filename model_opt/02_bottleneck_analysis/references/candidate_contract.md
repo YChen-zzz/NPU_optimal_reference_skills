@@ -40,16 +40,15 @@ Line A、Line B 和 Line T 必须输出同一种候选。Phase 3 不根据候选
 
 ## 实现阶梯
 
-按以下顺序寻找 NPU 实现；只有前一级不适用、失败或收益不足时才升级：
+Ascend 默认 API-first。按以下顺序寻找常规 NPU 实现；只有前一级不适用、失败或收益不足时才升级：
 
 1. remove_or_cache：删除、缓存、预计算、buffer 复用、避免 host read；
 2. official_npu_api：官方 NPU native/fused/sparse API 或参数；
 3. manual_rewrite：代数、layout、storage、precision boundary、向量化或 API 表达改写；
-4. selective_compile：调整 graph boundary、functionalization、局部编译；
-5. schedule_or_autograd：stream/collective schedule、custom autograd、saved-tensor policy；
-6. custom_kernel：剩余 exposed gain 足以覆盖实现与维护成本时才使用。
+4. schedule_or_autograd：stream/collective schedule、custom autograd、saved-tensor policy；
+5. custom_kernel：剩余 exposed gain 足以覆盖实现与维护成本时才使用。
 
-阶梯表示试验顺序，不表示 compile 不重要。只有前级不适用、失败或收益不足，或 NPU Profile 与 Supernode Lab 已证明 compile 是更直接的机制时才跳级。不得因一个框架实现失败就强制编写自定义 kernel。
+`selective_compile` 不参与常规抢占排序，是最后解锁的 fallback。只有官方 NPU API 已完成发现与 Lab 验证，且所有适用的非 compile 路径均不适用、失败或收益不足时才能进入 trial；GPU Teacher 的 compile guideline 只提供方法线索，不能跳过该门禁。不得因 compile 或框架实现失败就强制编写自定义 kernel。
 
 ## 收益与排序
 

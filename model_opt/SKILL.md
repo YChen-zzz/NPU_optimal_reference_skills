@@ -17,6 +17,7 @@ description: 自动优化昇腾 NPU 上的训练、推理或科学计算负载�
 6. 使用可回滚 iterative baseline；失败试验保留证据，但不进入当前最佳分支。
 7. 沿当前 backlog 持续优化；收益停滞或证据失效后才重新采集高开销 Profiling。
 8. 主 Agent 不得直接宣布“没有优化空间”；只能提交 `stop_proposed`，并由独立 Stop Auditor 审计。
+9. Ascend 默认 API-first：官方 NPU API/参数未完成发现与验证前，不得启动 selective compile；GPU Teacher 使用 compile 不能解锁 NPU compile。(generally NPU compile 在model 上不work)
 
 ## Phase 1：准备
 
@@ -26,6 +27,7 @@ description: 自动优化昇腾 NPU 上的训练、推理或科学计算负载�
 - regime 触发条件、shape/dtype/work-domain、出现频率和 transition；
 - 一次可比的原始 NPU wall-clock + L0 baseline；已有可信 baseline 直接复用；
 - 精度 baseline、验证阈值和自然波动；
+- 一个约 60 秒的可复现短跑及原始 NPU 短跑结果；
 - Git 安全点、工作分支和未提交改动保护；
 - GPU Teacher pack 的路径、manifest 或缺失状态。标准模式不跨机器自动采 GPU。
 
@@ -53,8 +55,9 @@ Phase 2 结束条件不是“列出想法”，而是每个候选均满足 [Cand
 
 读取 [03_optimization/SKILL.md](03_optimization/SKILL.md)。
 
+- 首次修改 workload 前必须运行 Phase 3 wave preflight；非零退出即阻塞实施。
 - 先执行高收益、高置信、低/中风险 Action；兼容 Action 可组成 bundle。
-- 实现顺序：删除/缓存/buffer 复用 → 官方 NPU API/参数 → manual/layout/API 改写 → selective compile → schedule/custom autograd → custom kernel。只列适用方法，并写明跳过前级的原因。
+- 默认顺序：删除/缓存/buffer 复用 → 官方 NPU API/参数 → manual/layout/API 改写 → schedule/custom autograd → custom kernel；selective compile 是最后解锁的 fallback。只列适用方法，并写明排除依据。
 - 对可忠实隔离、且一轮对照成本不超过一次 60 秒短跑的高价值 Supernode，默认运行 [Supernode Lab](03_optimization/references/supernode_lab.md)。
 - 每项保留独立 commit、开关或 patch，能够消融和回退。
 - 每个 Action 后运行最低成本正确性门和低开销计时；不默认重采 L1。

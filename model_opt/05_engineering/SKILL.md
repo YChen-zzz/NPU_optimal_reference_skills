@@ -42,6 +42,7 @@ rejected/inconclusive trial：
 4. evidence_db trial 记录完整；
 5. 修改文件与 Candidate 声明一致；
 6. 当前 tree 不包含无关用户修改。
+7. 运行 Phase 3 脚本的 `--stage action --candidate-id <id> --verify-receipt`；当前 Action receipt 必须存在，且 manifest hash 与当前 `phase3_preflight.json` 一致。
 
 通过后无需逐次询问用户即可 commit。稳定主分支不自动合并，除非当前任务已明确授权。
 

@@ -12,6 +12,8 @@
 - 候选已去重并标注依赖、冲突、风险和验证门；
 - priority 的输入因子与依据已落盘。
 
+进入生产代码 trial 前必须运行 `<skill-root>/model_opt/03_optimization/scripts/check_phase3_preflight.py --stage wave`；非零退出时停留在 Phase 1/2 补齐产物。选择 Action 时运行 `--stage action --candidate-id <id>`。selective compile 未通过 API-first unlock 时必须被脚本拒绝；Phase 5 使用同一命令追加 `--verify-receipt` 校验 action receipt。
+
 若高价值 Supernode 可忠实隔离且一轮对照成本不超过一次短跑，默认运行 [Supernode Lab](../03_optimization/references/supernode_lab.md)；否则记录精确例外，不直接跳过局部补证。
 
 ## Trial 状态机

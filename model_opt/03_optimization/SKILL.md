@@ -7,13 +7,23 @@ description: 自动实施 Phase 2 产生的统一 NPU 优化候选；按去重�
 
 输入必须符合 [Candidate Contract](../02_bottleneck_analysis/references/candidate_contract.md)。候选来自 Line A/B/T 使用同一验证与采纳流程；Line T 候选额外携带 Teacher method guideline，用于缩小 NPU adaptation 的搜索空间。
 
+## 0. 强制 Preflight
+
+首次修改 workload 前创建 `evidence_db/phase3_preflight.json`，然后运行：
+
+~~~text
+python <skill-root>/model_opt/03_optimization/scripts/check_phase3_preflight.py --workspace <workload-root> --stage wave
+~~~
+
+脚本非零退出时不得开始生产代码 trial。修复缺失产物；环境无法完成时标记 `blocked_environment`。选择 Action 前再运行 `--stage action --candidate-id <id>`；Phase 5 必须引用脚本生成的 receipt。不得只在记录中声称门禁通过。字段模板由脚本的 `--print-template` 输出。
+
 ## 1. 选择 Action 或 Bundle
 
 按以下顺序处理：
 
 1. 过滤依赖未满足、证据为 C 且无法低成本补证、或已测收益上限低于噪声的候选；
 2. 按 NPU weighted exposed gain 选择最高价值 Supernode；
-3. 在节点内按实现阶梯选择最低的有效方法，核对每条适用路径的限制；
+3. 在节点内先搜索官方 NPU API，再处理其他适用的非 compile 路径；
 4. 可忠实隔离且一轮对照成本不超过一次短跑时，默认运行 Supernode Lab；
 5. 只有 Lab/独立门禁通过的高收益、低风险、机制兼容 Action 才可组成 bundle；
 6. dtype/rounding、loss/backward、optimizer、communication、state/lifetime 和 custom kernel 默认隔离。
@@ -33,24 +43,23 @@ A/强 B 的 `source_direct` 若正确性风险和试验成本低，即使 expose
 | 掩盖 | 不可消除延迟能否与计算/通信重叠 | [hide_latency.md](references/hide_latency.md) |
 | 替换 | 是否有 NPU 更友好的等价实现 | [equivalent_substitution.md](references/equivalent_substitution.md) |
 
-始终扫描 [npu_checklist.md](references/npu_checklist.md) 中与当前热路径相关的已知问题。decode 或多卡负载分别按需读取 [decode_optimization.md](references/decode_optimization.md) 和 [parallel_design.md](references/parallel_design.md)。
+始终扫描 [npu_checklist.md](references/npu_checklist.md) 中与当前热路径相关的已知问题。
 
 GPU Teacher 的算法、eliminated/fused/work-domain/layout/reuse/precision/schedule 方法映射到上述维度。先验证其成立条件，再优先尝试语义等价的 NPU 翻译；不得复制 GPU-specific kernel 指令或未经证明的硬件参数。
 
 ## 3. 实现阶梯
 
-默认从低成本、低维护风险向上搜索：
+Ascend 默认 API-first：
 
 1. 删除、缓存、预计算、buffer 复用、修复 porting gap；
 2. 官方 NPU native/fused/sparse API 或参数；
 3. manual：代数、layout、storage、precision boundary、向量化或 API 改写；
-4. graph boundary、functionalization、selective compile；
-5. stream、collective schedule、custom autograd/saved tensor；
-6. custom kernel。
+4. stream、collective schedule、custom autograd/saved tensor；
+5. custom kernel。
 
 Teacher 已给出 guideline 时，不从空白重新发散：先测试 Candidate 中的 NPU adaptation options；只有不适用、失败或收益不足时才扩展搜索。方法相同不代表实现相同，NPU 侧仍按本阶梯选择官方 API、图编译、调度或 kernel。
 
-本顺序是试验成本顺序，不是价值判断。compile 对 host-bound、多小算子或大张量 elementwise island 仍可能是最优解，但必须由 NPU 证据和对照测试证明；不能仅因 GPU 使用 compile 而提前。官方实现失败不自动触发 custom kernel。
+`selective_compile` 是最后解锁的 fallback，不因 GPU Teacher 使用 compile、图上小算子多或理论上可融合而提前。进入 compile trial 前必须由 action preflight 证明：官方 NPU API 已发现并实测，适用的非 compile 路径已不适用、失败或收益不足，当前非 compile 高价值 backlog 已处理。官方实现失败不自动触发 compile 或 custom kernel。
 
 查询官方算子时先读 [npu_operator_catalog.yaml](references/npu_operator_catalog.yaml)，再用当前环境和官方文档验证签名、dtype、shape、layout、版本和训练/反向支持。目录中的经验不得脱离版本直接当事实。
 

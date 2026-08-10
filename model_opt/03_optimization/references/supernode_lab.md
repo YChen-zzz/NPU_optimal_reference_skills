@@ -13,7 +13,7 @@
 
 ## 对照方法
 
-始终保留 `current_npu` control。按实现阶梯加入适用方法：official native/fused、manual/layout/API、selective compile、schedule/autograd、custom kernel。不要为凑齐类别实现明显不适用的方法。
+始终保留 `current_npu` control。优先测试 official native/fused，再测试适用的 manual/layout/API、schedule/autograd 或 custom kernel。selective compile 只有在官方 API 已实测、非 compile 路径已证据化排除或收益不足后才加入。GPU Teacher 使用 compile 不能跳过该顺序。
 
 每条路径记录：成立条件、主要限制、版本/API 证据、预期机制和跳过条件。
 
