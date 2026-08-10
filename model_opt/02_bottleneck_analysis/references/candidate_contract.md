@@ -21,8 +21,9 @@ Line A、Line B 和 Line T 必须输出同一种候选。Phase 3 不根据候选
 | transferable_mechanism | 可迁移的机制、成立条件，以及不可直接迁移的 GPU-specific 部分 |
 | transfer_class | direct_port_fix、algorithmic、compiler_intent、schedule、hardware_specific 或 not_applicable |
 | teacher_method_confidence | 方法及成立条件的证据置信度；无 Teacher 时为 not_applicable |
-| npu_adaptation_options | 按实现阶梯排列的 NPU 适配方案；可包含多个备选 |
+| npu_adaptation_options | 按实现阶梯排列的适用方案；每项写成立条件、主要限制和所需证据。无需列出明显不适用的方法 |
 | implementation_path | 下方实现阶梯中的一级 |
+| supernode_lab_ref | 高价值/多路径候选的对照测试计划或结果；不需要时写 `lab_not_required:<具体理由>` |
 | platform_support_evidence | NPU API/version、microbenchmark、graph/profile 或环境事实 |
 | weighted_exposed_gain | 按 regime 频率和关键路径暴露量计算的保守直接收益；允许 unmeasured |
 | enabling_gain | 内存、compile、fusion、batch 或 overlap 的间接使能价值；不得直接加到 wall-clock |
@@ -41,14 +42,14 @@ Line A、Line B 和 Line T 必须输出同一种候选。Phase 3 不根据候选
 
 按以下顺序寻找 NPU 实现；只有前一级不适用、失败或收益不足时才升级：
 
-1. remove_or_cache：删除、缓存、预计算、避免 host read；
+1. remove_or_cache：删除、缓存、预计算、buffer 复用、避免 host read；
 2. official_npu_api：官方 NPU native/fused/sparse API 或参数；
-3. api_layout_rewrite：代数、layout、storage、API 表达改写；
+3. manual_rewrite：代数、layout、storage、precision boundary、向量化或 API 表达改写；
 4. selective_compile：调整 graph boundary、functionalization、局部编译；
-5. schedule_or_autograd：buffer/stream/collective schedule、custom autograd、saved-tensor policy；
+5. schedule_or_autograd：stream/collective schedule、custom autograd、saved-tensor policy；
 6. custom_kernel：剩余 exposed gain 足以覆盖实现与维护成本时才使用。
 
-不得因一个框架实现失败就强制编写自定义 kernel。是否升级由剩余收益上限、成功概率、实现成本和维护风险共同决定。
+阶梯表示试验顺序，不表示 compile 不重要。只有前级不适用、失败或收益不足，或 NPU Profile 与 Supernode Lab 已证明 compile 是更直接的机制时才跳级。不得因一个框架实现失败就强制编写自定义 kernel。
 
 ## 收益与排序
 
@@ -78,7 +79,7 @@ priority =
 
 ## 合并与 Bundle
 
-同一 semantic role、source location、regime 和 root cause 的候选合并，保留多条证据、Teacher method guideline 与多个 NPU adaptation path。
+同一 semantic role、source location、regime 和 root cause 的候选合并，保留多条证据、Teacher method guideline 与适用的 NPU adaptation path。先排序 Supernode，再在节点内选择最低的有效阶梯。
 
 多个候选可组成 bundle，条件是：
 

@@ -32,6 +32,10 @@
 │   ├── kernel_summary.csv
 │   ├── communication_summary.csv
 │   └── memory_summary.csv
+├── supernode_labs/
+│   └── <supernode_id>/<lab_id>.yaml
+├── short_runs/
+│   └── <short_run_id>.yaml
 ├── trials/
 │   └── <trial_id>.yaml
 ├── findings.jsonl
@@ -48,7 +52,8 @@ raw profiling、graph、IR 和 generated code 不复制进 evidence_db，只登�
 - training/inference mode、objective、full-run command；
 - accuracy/performance/iterative baseline、阈值与自然波动；
 - NPU/GPU hardware、software、world size、environment ID；
-- source repository、优化分支、baseline commit。
+- source repository、优化分支、baseline commit；
+- performance goal、已完成的 20% goal-progress full-run 档位。
 
 `regimes.yaml` 每个 regime：
 
@@ -154,6 +159,8 @@ implementation:
   files_modified: []
   summary:
   npu_adaptation_option:
+  supernode_lab_ref:
+  cumulative_winner_ref:
 validation:
   static:
   operator:
@@ -161,6 +168,17 @@ validation:
   gradient_state:
   negative_control:
   weighted_short_run:
+    accuracy_baseline_short_run_ref:
+    performance_baseline_short_run_ref:
+    same_seed_state_data_steps:
+    shortened_total_steps:
+    scheduler_regime_transition_mapping:
+    duration_seconds:
+    loss_curve_diff:
+    validation_loss_diff:
+    precision_or_resource_replay_reason:
+    replay_checkpoint_refs: []
+    goal_progress:
   full_run:
 performance:
   baseline_ref:

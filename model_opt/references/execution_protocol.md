@@ -12,13 +12,14 @@
 - 候选已去重并标注依赖、冲突、风险和验证门；
 - priority 的输入因子与依据已落盘。
 
-若 top candidate 的排序主要来自不确定性，先补最小证据或 microbenchmark，不直接改代码。
+若高价值 Supernode 可忠实隔离且一轮对照成本不超过一次短跑，默认运行 [Supernode Lab](../03_optimization/references/supernode_lab.md)；否则记录精确例外，不直接跳过局部补证。
 
 ## Trial 状态机
 
 ~~~text
 proposed
 → instrumented
+→ supernode_lab_passed | lab_not_required
 → local_correctness_passed
 → model_scope_passed
 → weighted_short_run_passed
@@ -42,10 +43,9 @@ proposed
 
 进入验证前确认：
 
-- 改动范围与 Candidate 声明一致；
-- bundle 内每项可独立消融；
-- semantic、precision、state、memory 和 multi-rank 风险已映射到门禁；
-- 受影响 regime 和边界 shape 已知；
+- 改动范围与 Candidate 声明一致，Lab cumulative winner 可回退；
+- 已从原 setting 生成约 60 秒的 total-step 与 scheduler/regime 映射；
+- 直接修改 backward、optimizer、communication 或 state 时已指定对应专项检查；
 - 没有覆盖用户未提交修改。
 
 ## Phase 4 → Phase 5
@@ -62,7 +62,19 @@ proposed
 
 ## Full run
 
-Agent 根据以下因素自动决定是否提前运行完整任务：
+训练候选默认只对比 current iterative baseline 与 Lab cumulative winner。保留原 setting，只缩短 total step，并按原比例压缩 scheduler、regime 和 transition，使 baseline 在约 60 秒完成 validation；candidate 使用相同 seed、初始状态、数据顺序和 step，比较同一步的 val loss 与时间。
+
+Lab 收益只作为局部排序上限；短跑收益更低不触发回放。只有精度或资源结果偏离 Lab 时，才运行 cumulative checkpoint 或 `winner-minus-one` 定向消融。
+
+有明确 `baseline_time` 和 `goal_time` 时计算：
+
+~~~text
+goal_progress =
+  (baseline_time - current_projected_time)
+  / (baseline_time - goal_time)
+~~~
+
+首次跨过新的 20% 档位时运行 full run，同一档位不重复。Agent 还根据以下因素决定是否提前 full run：
 
 - full_run 成本；
 - 剩余 wave 的试验成本；

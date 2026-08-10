@@ -70,7 +70,7 @@ Line T 必须输出 Supernode 表和带 method guideline 的 Action Sheet，不�
 - Line T 没覆盖的 NPU 独有问题继续由 A/B 处理。
 - 三条线结论冲突：降低置信度，先补最小证据或 microbenchmark，不直接改代码。
 
-所有候选遵循 [Candidate Contract](references/candidate_contract.md)。先完成每个 Supernode/根因的合理 Action Sheet，再做全局排序。
+所有候选遵循 [Candidate Contract](references/candidate_contract.md)。先按 NPU exposed gain 排序 Supernode；再为高价值 Gap 列出适用的 NPU 方法、各自限制和升级条件。无需机械列满实现阶梯，但跳过前级必须有证据。
 
 ## Phase 2 完成条件
 
@@ -79,6 +79,7 @@ Line T 必须输出 Supernode 表和带 method guideline 的 Action Sheet，不�
 - A/B 已执行；T 的路由决定和证据状态已记录；
 - 每个显著发现都有候选或证据化排除；
 - 每个候选包含目标 gap、regime、证据、实现路径、成本、风险和验证门；直接收益已测量/保守估计，或对 source-direct 明确标记 unmeasured 并给出最小计时动作；
+- 高价值候选已记录适用方法、限制、跳级依据，以及 `supernode_lab_ref` 或 `lab_not_required` 的具体理由；
 - 候选已去重、处理依赖/冲突，并完成全局排序；
 - evidence_db/candidates.csv 或等价 JSONL 已写入。
 

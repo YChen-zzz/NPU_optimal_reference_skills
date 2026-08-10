@@ -62,7 +62,7 @@ source
 
 ## 5. 翻译方法并生成 Action Sheet
 
-对每个有 Gap 的 Supernode，先写明 Teacher 已采用的方法及其成立条件，再拆成“可迁移机制”和“GPU-specific 实现”。针对可迁移机制枚举合理 NPU 实现，并映射到主流程 [Candidate Contract](../references/candidate_contract.md)。
+对每个有 Gap 的 Supernode，先写明 Teacher 已采用的方法及其成立条件，再拆成“可迁移机制”和“GPU-specific 实现”。针对可迁移机制列出合理 NPU 实现、成立条件和限制，并映射到主流程 [Candidate Contract](../references/candidate_contract.md)。无需机械列满所有路径；跳过更低阶方法必须记录原因。
 
 优先搜索：
 
@@ -73,7 +73,9 @@ source
 5. buffer、saved tensor、autograd、stream 或 collective schedule；
 6. custom kernel。
 
-若 NPU 有同语义官方实现，优先复用；否则选择最接近 Teacher guideline 的 API/layout/compile/schedule 方案。GPU kernel 的 tiling、指令和绝对时间不得直接迁移，但 Teacher 的算法、work-domain、融合边界、精度边界、复用与调度方法本身是强先验。
+若 NPU 有同语义官方实现，优先验证；否则选择最接近 Teacher guideline 的 manual/API/layout/compile/schedule 方案。GPU compile delta 说明优化机制，不自动把 compile 提升为 NPU 第一实现。GPU kernel 的 tiling、指令和绝对时间不得直接迁移，但 Teacher 的算法、work-domain、融合边界、精度边界、复用与调度方法本身是强先验。
+
+高价值 Supernode 可忠实隔离且一轮对照成本不超过一次短跑时，Action Sheet 默认要求 Phase 3 运行 [Supernode Lab](../../03_optimization/references/supernode_lab.md)；不可运行时写明精确原因。
 
 ## 6. 与 Line A/B 合并
 

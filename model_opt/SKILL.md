@@ -13,7 +13,7 @@ description: 自动优化昇腾 NPU 上的训练、推理或科学计算负载�
 2. Line A 源码分析和 Line B NPU Profiling 始终执行；满足路由条件时增加 Line T GPU Teacher。
 3. GPU Teacher 同时提供 source-port gap、compile method guideline 和 runtime gap；迁移优化机制，不照搬 GPU kernel，并用 NPU 实测决定优先级与采纳。
 4. 所有路线输出同一 Candidate Contract；Phase 3、4、5 不区分候选来源。
-5. 候选按加权关键路径收益、证据、可行性、正确性风险和实现成本排序。
+5. 先按 NPU 加权关键路径收益选择 Supernode，再在该 Supernode 内按实现阶梯选择方法；GPU 上的方法不直接决定 NPU 实施顺序。
 6. 使用可回滚 iterative baseline；失败试验保留证据，但不进入当前最佳分支。
 7. 沿当前 backlog 持续优化；收益停滞或证据失效后才重新采集高开销 Profiling。
 8. 主 Agent 不得直接宣布“没有优化空间”；只能提交 `stop_proposed`，并由独立 Stop Auditor 审计。
@@ -54,20 +54,19 @@ Phase 2 结束条件不是“列出想法”，而是每个候选均满足 [Cand
 读取 [03_optimization/SKILL.md](03_optimization/SKILL.md)。
 
 - 先执行高收益、高置信、低/中风险 Action；兼容 Action 可组成 bundle。
-- 实现顺序：删除/缓存 → 官方 NPU API/参数 → layout/API 改写 → selective compile → schedule/custom autograd → custom kernel。
+- 实现顺序：删除/缓存/buffer 复用 → 官方 NPU API/参数 → manual/layout/API 改写 → selective compile → schedule/custom autograd → custom kernel。只列适用方法，并写明跳过前级的原因。
+- 对可忠实隔离、且一轮对照成本不超过一次 60 秒短跑的高价值 Supernode，默认运行 [Supernode Lab](03_optimization/references/supernode_lab.md)。
 - 每项保留独立 commit、开关或 patch，能够消融和回退。
 - 每个 Action 后运行最低成本正确性门和低开销计时；不默认重采 L1。
 
 ## Phase 4：自动门禁
 
-读取 [04_accuracy_assurance/SKILL.md](04_accuracy_assurance/SKILL.md)。按风险逐级执行：
+读取 [04_accuracy_assurance/SKILL.md](04_accuracy_assurance/SKILL.md)。训练负载默认执行：
 
-1. 静态语义、shape、dtype、mask/work-domain 和 state；
-2. 修改区域完整输出、边界 case、受影响中间层和最后一层；
-3. 受影响时验证 gradient、saved tensor、optimizer state 和 collective ordering；
-4. 训练负载执行按真实 regime 比例构造的短跑；推理负载覆盖代表和边界输入；
-5. 比较原始 accuracy baseline，并用当前 iterative baseline 判断性能收益；
-6. wave 里程碑和最终版本执行完整任务。
+1. 使用相同输入比较受影响中间层、最后一层和模型输出；
+2. 保留原 setting，只缩短总 step，并按原比例映射 scheduler、regime 和 transition，使 baseline 在约 60 秒内完成；candidate 使用相同 seed、数据、初始状态和 step，比较 val loss 与时间；
+3. 只有改动直接触及 backward、optimizer、communication 或 state 时，追加对应专项检查；
+4. 首次跨过新的 20% goal-progress 档位、重大高风险修改、wave 里程碑和最终版本时执行完整任务。
 
 正确性、性能、内存或稳定性任一失败，自动拒绝或隔离该 trial。
 

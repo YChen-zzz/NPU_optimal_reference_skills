@@ -12,10 +12,11 @@ description: 自动实施 Phase 2 产生的统一 NPU 优化候选；按去重�
 按以下顺序处理：
 
 1. 过滤依赖未满足、证据为 C 且无法低成本补证、或已测收益上限低于噪声的候选；
-2. 重算 priority；
-3. 选择最高价值且互不冲突的 Action；
-4. 高收益、低风险、机制兼容的 Action 可组成 bundle；
-5. dtype/rounding、loss/backward、optimizer、communication、state/lifetime 和 custom kernel 默认隔离。
+2. 按 NPU weighted exposed gain 选择最高价值 Supernode；
+3. 在节点内按实现阶梯选择最低的有效方法，核对每条适用路径的限制；
+4. 可忠实隔离且一轮对照成本不超过一次短跑时，默认运行 Supernode Lab；
+5. 只有 Lab/独立门禁通过的高收益、低风险、机制兼容 Action 才可组成 bundle；
+6. dtype/rounding、loss/backward、optimizer、communication、state/lifetime 和 custom kernel 默认隔离。
 
 每个 Action 建立独立 trial ID、父 iterative baseline、代码 diff、命令、环境、预测收益和失败 predicate。
 
@@ -40,20 +41,26 @@ GPU Teacher 的算法、eliminated/fused/work-domain/layout/reuse/precision/sche
 
 默认从低成本、低维护风险向上搜索：
 
-1. 删除、缓存、预计算、修复 porting gap；
+1. 删除、缓存、预计算、buffer 复用、修复 porting gap；
 2. 官方 NPU native/fused/sparse API 或参数；
-3. 代数、layout、storage、precision boundary 或 API 改写；
+3. manual：代数、layout、storage、precision boundary、向量化或 API 改写；
 4. graph boundary、functionalization、selective compile；
-5. buffer、stream、collective schedule、custom autograd/saved tensor；
+5. stream、collective schedule、custom autograd/saved tensor；
 6. custom kernel。
 
 Teacher 已给出 guideline 时，不从空白重新发散：先测试 Candidate 中的 NPU adaptation options；只有不适用、失败或收益不足时才扩展搜索。方法相同不代表实现相同，NPU 侧仍按本阶梯选择官方 API、图编译、调度或 kernel。
 
-官方实现失败不自动触发 custom kernel。只有剩余 exposed gain、成功概率和长期维护价值足以覆盖成本时才升级。
+本顺序是试验成本顺序，不是价值判断。compile 对 host-bound、多小算子或大张量 elementwise island 仍可能是最优解，但必须由 NPU 证据和对照测试证明；不能仅因 GPU 使用 compile 而提前。官方实现失败不自动触发 custom kernel。
 
 查询官方算子时先读 [npu_operator_catalog.yaml](references/npu_operator_catalog.yaml)，再用当前环境和官方文档验证签名、dtype、shape、layout、版本和训练/反向支持。目录中的经验不得脱离版本直接当事实。
 
-## 4. Trial 执行
+## 4. Supernode Lab
+
+对每个可忠实隔离、且一轮对照成本不超过一次 60 秒短跑的高价值 Supernode，默认读取并执行 [supernode_lab.md](references/supernode_lab.md)。测试代码与结果必须持久化；临时命令不能作为路径已比较的证据。
+
+只比较适用方法。至少保留当前 NPU 实现作为 control，沿实现阶梯记录单项边际收益和累计收益，并覆盖受影响 regime 的真实 shape、dtype、layout/stride 和 forward/backward。Lab 获胜只允许累计 winner 进入训练短跑，不等于最终接受。
+
+## 5. Trial 执行
 
 每个 trial：
 
@@ -61,13 +68,13 @@ Teacher 已给出 guideline 时，不从空白重新发散：先测试 Candidate
 2. 先写静态 semantic/precision/work-domain 断言；
 3. 实施最小可验证改动；
 4. 运行 Phase 4 指定的最低成本正确性门；
-5. 使用匹配 regime 的 microbenchmark 或低开销 step timing 测分布；
+5. 使用 Supernode Lab、匹配 regime 的 microbenchmark 或低开销 step timing 测分布；
 6. 根据结果标记 accepted、rejected、inconclusive 或 blocked；
 7. accepted 才能更新 iterative baseline。
 
 代码能运行不代表接受。性能改善必须超过测量噪声，且无实质性 precision、memory、regime 或 rank 回退。
 
-## 5. Bundle 规则
+## 6. Bundle 规则
 
 可合并：
 
@@ -88,7 +95,7 @@ Teacher 已给出 guideline 时，不从空白重新发散：先测试 Candidate
 
 每项保留独立 commit、开关或 patch，bundle 必须能做消融。`enabling_gain` 只用于依赖和解锁排序，不与直接 wall-clock gain 相加。
 
-## 6. 放弃与失败知识
+## 7. 放弃与失败知识
 
 放弃方向需要可复现依据，但不强制穷举自定义实现。
 
@@ -103,7 +110,7 @@ Teacher 已给出 guideline 时，不从空白重新发散：先测试 Candidate
 
 记录准确 predicate：环境、regime、shape、dtype、API 参数、实现、性能和重新打开条件。不要把局部失败泛化成“该方向永远不可用”。
 
-## 7. 与重新 Profiling 的关系
+## 8. 与重新 Profiling 的关系
 
 每个 Action 后执行低开销计时，但不默认采新 L1。当前 backlog 仍有显著候选时继续 Phase 3。
 

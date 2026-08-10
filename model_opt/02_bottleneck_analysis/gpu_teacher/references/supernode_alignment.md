@@ -98,12 +98,9 @@ Teacher method guideline:
 可迁移机制:
 GPU-specific exclusions:
 NPU adaptation options:
-  1. remove/cache
-  2. official NPU API/parameter
-  3. algebra/layout/precision/API rewrite
-  4. selective compile/graph boundary
-  5. autograd/buffer/stream/collective schedule
-  6. custom kernel
+  - <适用路径>: <成立条件>; limitation=<主要限制>; evidence=<已有/待补>
+Skipped lower rungs: <不适用、失败或收益不足的证据>
+Supernode Lab: <required + 对照方法，或 lab_not_required:具体理由>
 Platform support evidence:
 Direct gain / enabling gain / upper bound:
 Correctness and resource risks:
@@ -112,7 +109,7 @@ Negative control:
 Evidence gaps:
 ~~~
 
-同一 Gap 允许多个 NPU adaptation option。Teacher 提供优化方法 guideline，Phase 3 负责 NPU adaptation；方法相同不代表 GPU kernel 实现可直接复制。
+同一 Gap 允许多个 NPU adaptation option，但不要求列出明显不适用的方法。Teacher 提供优化方法 guideline，Phase 3 负责 NPU adaptation；方法相同不代表 GPU kernel 实现可直接复制。
 
 先完成所有高价值 Supernode 的方法翻译卡，再全局排序。不要发现第一个 fusion 就立刻实施。
 
