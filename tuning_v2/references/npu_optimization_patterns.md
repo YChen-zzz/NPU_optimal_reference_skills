@@ -65,7 +65,14 @@
 
 ### L3: 等价手动改写
 
-**常见 pattern**:
+**同一数学运算的多种表达**: PyTorch 中数学等价的表达式可能走完全不同的 dispatch 路径，在 NPU 上性能差异可达 30-50%。对每个热路径中的 op，列出所有等价表达并在 Lab 中对比：
+- method 形式: `x.square()`, `x.pow(2)`, `x.mul(x)`, `x * x`
+- functional 形式: `torch.square(x)`, `torch.pow(x, 2)`, `torch.mul(x, x)`
+- in-place 形式: `x.mul_(x)`, `x.square_()`
+
+哪种最快取决于后端实现——不要假设 "专用方法一定比通用表达快"。总是 benchmark 验证。
+
+**其他常见 pattern**:
 - 消除 double-transpose: `F.linear(x, w.T)` → `torch.matmul(x, w)`
 - `permute + contiguous` 链 → 上游选择正确 layout
 - Flat forward: 从 `nn.Module` 提取 weights 用 `F.*` 直接调用（消除框架 dispatch）
