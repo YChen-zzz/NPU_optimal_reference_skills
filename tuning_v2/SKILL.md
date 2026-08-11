@@ -225,7 +225,7 @@ Agent 容易在连续失败后放弃或在 "看起来够好" 时过早停止。�
 
 Agent **只有**满足以下**全部**条件时才能停止当前 SN：
 
-1. L0-L4 每级至少测试过 1 个方案（或有明确 skip 原因写入 progress）
+1. L0-L4 每级至少测试过 4 个方案（或有明确 skip 原因写入 progress）
 2. 每级内的方案都跑过 forward + backward + 多 shape
 3. 如果某级报错，已追过根因并尝试至少 2 种不同的修复方式
 4. Winner 已通过多卡 ablation（或确认增益 < 测量噪声）
@@ -260,6 +260,43 @@ Agent **只有**满足以下**全部**条件时才能停止当前 SN：
 - 代码结构大改后旧 benchmark 失效
 - 发现新的 NPU API 或环境变量
 - Regime/shape 变化使旧结论失效
+
+---
+
+## Git 与日志管理
+
+### Git (最小化)
+
+1. **优化开始前**: `git commit -am "baseline before optimization"` — 安全回滚点
+2. **每个 SN ablation 通过并合入 train_gpt.py 后**: `git commit -am "SN-<name>: <winner>"` — checkpoint
+3. **需要回滚**: `git checkout -- train_gpt.py` 回到上一个 checkpoint
+
+不要为每个实验创建 branch（用独立文件隔离代替），不要在 git 操作上花超过 1 分钟。
+
+### 日志 (集中命名)
+
+所有训练 run 的日志保存到 `logs/` 目录，文件名编码实验内容：
+
+```
+logs/
+├── baseline.log                    # 初始 baseline
+├── sn_loss_L4c_compile_sig.log     # SN-Loss L4c ablation
+├── sn_attn_L0a_pre_tockens.log     # SN-Attn L0a ablation
+├── v5_all_combined.log             # 组合版本
+└── final_full_run.log              # 最终 full run
+```
+
+每个 run script 统一格式：
+```bash
+torchrun ... train_gpt_short_X.py 2>&1 | tee logs/<descriptive_name>.log
+```
+
+**快速对比所有实验结果**：
+```bash
+grep "step:.*val_loss" logs/*.log
+```
+
+不要依赖 job 平台的远程日志查看（ID 难记、job 结束后可能不可访问）。
 
 ---
 
