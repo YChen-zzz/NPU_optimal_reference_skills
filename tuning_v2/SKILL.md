@@ -108,6 +108,21 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 | **L5** | Custom autograd | 当 API forward 快但 backward 有问题时 |
 | **L6** | AscendC kernel | 最后手段 |
 
+**每级内穷举多个方案**:
+
+在每个层级内，不要只尝试一种方法就进入下一级。主动发散：
+
+- **L0**: 该 API 有哪些可调参数？每个都试。有哪些相关环境变量？逐个测试。
+- **L1**: 有几处冗余 cast？几处重复计算？每处都是独立的方案，分别测试。
+- **L2**: `dir(torch_npu)` 搜到的相关 API 可能有多个变体（如 `npu_rms_norm` vs `npu_add_rms_norm` vs `npu_gemma_rms_norm`），每个验证是否等价+性能。
+- **L3**: 同一个改写目标可能有多种手动实现（如 `.square()` → `h*h` vs `torch.pow(h,2)` vs `h.mul_(h)`），全部对比。
+- **L4**: compile scope 可以不同（只包 activation？包整个 MLP？包 norm+MLP？），每种 scope 都测。
+- **L5**: forward 用 API、backward 可以有多种手动实现（不同数学等价公式），对比精度和速度。
+
+**方案命名规则**: 在 Lab 中用 `B0`(control) + `L<级别><字母>` 命名，如 `L2a: npu_rms_norm`, `L2b: npu_add_rms_norm`, `L3a: h*h`, `L3b: torch.pow`。
+
+**累计搜索**: 每级的 winner 成为下一级的 parent baseline。最终报告 cumulative gain vs B0。
+
 **L4 (compile) 使用判断**:
 - ✅ 适合: 多个 elementwise/pointwise 链（sigmoid+mul, relu+mul, div+sigmoid+mul）
 - ❌ 不适合: 已是单个大算子（mm, attention, norm API）、tensor 很小（dispatch overhead > fusion gain）
