@@ -112,14 +112,14 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 
 在每个层级内，不要只尝试一种方法就进入下一级。主动发散：
 
-- **L0**: 该 API 有哪些可调参数？每个都试。有哪些相关环境变量？逐个测试。
-- **L1**: 有几处冗余 cast？几处重复计算？每处都是独立的方案，分别测试。
-- **L2**: `dir(torch_npu)` 搜到的相关 API 可能有多个变体（如 `npu_rms_norm` vs `npu_add_rms_norm` vs `npu_gemma_rms_norm`），每个验证是否等价+性能。
-- **L3**: 同一个改写目标可能有多种手动实现（如 `.square()` → `h*h` vs `torch.pow(h,2)` vs `h.mul_(h)`），全部对比。
-- **L4**: compile scope 可以不同（只包 activation？包整个 MLP？包 norm+MLP？），每种 scope 都测。
-- **L5**: forward 用 API、backward 可以有多种手动实现（不同数学等价公式），对比精度和速度。
+- **L0**: 查阅该 SN 所用 API 的完整签名，列出所有可调参数逐个测试；搜索相关环境变量。
+- **L1**: 该 SN 内有几处独立的冗余（cast/重复计算/sync）？每处作为独立方案分别测试。
+- **L2**: 按功能关键词搜索 `dir(torch_npu)`，可能有多个相关 API 变体。每个验证语义等价性+性能。
+- **L3**: 同一个改写目标可能有多种等价实现（不同数学表达、不同 layout、不同内存策略）。全部写出对比。
+- **L4**: compile 的 scope 可以不同（只包核心计算？包整个函数？包含上下游 norm？）。每种 scope 独立测试。
+- **L5**: 同一 forward API 的 backward 可能有多种手动等价推导。对比精度和速度。
 
-**方案命名规则**: 在 Lab 中用 `B0`(control) + `L<级别><字母>` 命名，如 `L2a: npu_rms_norm`, `L2b: npu_add_rms_norm`, `L3a: h*h`, `L3b: torch.pow`。
+**方案命名**: Lab 中用 `B0`(control) + `L<级别><序号>` 命名（如 `L2a`, `L2b`, `L3a`...）。
 
 **累计搜索**: 每级的 winner 成为下一级的 parent baseline。最终报告 cumulative gain vs B0。
 
