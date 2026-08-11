@@ -138,6 +138,7 @@ def B0_control():
 - GPU 在该 SN 用什么 dtype（input/compute/accumulator/output/saved_for_backward）？
 - NPU 是否多了 cast（.float()/.type_as()/.to()）？
 - 哪些 cast 是精度必需的，哪些是移植遗留？
+- ⚡ **常见陷阱**: GPU→NPU 移植时经常在 loss/norm 计算前插入 `.float()` 但 GPU 训练实际用 bf16。必须读 GPU source 确认 training path 的真实 dtype — 不要假设 f32 是必需的。移除移植遗留的 `.float()` 同时还能省去一次全 tensor 的 cast 开销。
 
 **Layout 对齐**:
 - 有无不必要的 transpose / .contiguous() / .view() vs .reshape()？
@@ -187,7 +188,7 @@ docstring 填完后，将每个 gap 映射为 TODO 候选：
 在每个层级内，不要只尝试一种方法就进入下一级。主动发散：
 
 - **L0**: 查阅该 SN 所用 API 的完整签名，列出所有可调参数逐个测试；搜索相关环境变量。
-- **L1**: 该 SN 内有几处独立的冗余（cast/重复计算/sync）？每处作为独立方案分别测试。
+- **L1**: 该 SN 内有几处独立的冗余（cast/重复计算/sync）？每处作为独立方案分别测试。同时检查参数存储 dtype——如果 weight 是 f32 但 activation 是 bf16，考虑将 weight 永久转为 bf16（消除每次 forward 的隐式 cast）。
 - **L2**: 按功能关键词搜索 `dir(torch_npu)`，可能有多个相关 API 变体。每个验证语义等价性+性能。
 - **L3**: 同一个改写目标可能有多种等价实现（不同数学表达、不同 layout、不同内存策略）。全部写出对比。
 - **L4**: compile 的 scope 可以不同（只包核心计算？包整个函数？包含上下游 norm？）。每种 scope 独立测试。
@@ -197,10 +198,32 @@ docstring 填完后，将每个 gap 映射为 TODO 候选：
 
 **累计搜索**: 每级的 winner 成为下一级的 parent baseline。最终报告 cumulative gain vs B0。
 
-**L4 (compile) 使用判断**:
+**L4 (compile) 关键知识**:
+
+⚡ **必须用 `backend='npu'`**:
+```python
+@torch.compile(backend='npu', dynamic=False)  # 不是默认 inductor!
+def fn(x):
+    ...
+```
+默认 `backend='inductor'` 在 NPU 上通常失败或无增益。`backend='npu'` 使用昇腾专用编译路径，对 elementwise chain 有显著 fusion 效果。
+
+⚡ **PATH 排错**: 如果报 "npuc" / "bishengir" / "Invalid bishengir path" 错误:
+```bash
+# 找到编译器实际位置
+find /usr/local/Ascend -name "bishengir-compile"
+# 加入 PATH (通常在 bisheng_toolkit/bishengir/bin/ 下)
+export PATH="/usr/local/Ascend/<version>/bisheng_toolkit/bishengir/bin:$PATH"
+```
+
+⚡ **Compile scope 很重要**: 不要只 compile 最小子表达式。尝试逐步扩大 scope（只包 activation → 包 activation+linear → 包 norm+linear+activation+linear），更大 scope 通常有更好的 fusion 效果。每种 scope 作为独立候选方案在 Lab 中对比。
+
+**适用判断**:
 - ✅ 适合: 多个 elementwise/pointwise 链（sigmoid+mul, relu+mul, div+sigmoid+mul）
 - ❌ 不适合: 已是单个大算子（mm, attention, norm API）、tensor 很小（dispatch overhead > fusion gain）
 - 注意: `dynamic=False` 在多 regime 训练中每个 shape 编译一次后缓存
+
+⚡ **多卡注意**: 首次多卡 compile 可能崩溃（"unable to open output file kernel_meta/..."）→ 设 `export TORCH_NPU_COMPILE_CACHE_DIR=/tmp/npu_compile_cache`
 
 ### 3c. Supernode Lab (强制)
 
