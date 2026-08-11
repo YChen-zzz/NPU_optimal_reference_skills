@@ -42,39 +42,97 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 
 ---
 
-## Step 2: Supernode 划分
+## Step 2: Supernode 划分 + Lab 骨架创建
 
 ### 划分方法
 
 详见 [references/supernode_analysis.md](references/supernode_analysis.md)
 
+**GPU IR 快速提取** (不需要读完 13000+ 行):
+```bash
+# 提取所有 fusion group 概览
+grep -E "^op[0-9]|FusedSchedulerNode|ExternKernel" ir_post_fusion.txt | head -80
+
+# 提取不可融合的大算子
+grep "ExternKernel" ir_post_fusion.txt
+
+# 提取特定范围的 fusion detail
+sed -n '<start>,<end>p' ir_post_fusion.txt
+```
+
 **核心流程**:
 
-1. 读 GPU `ir_post_fusion.txt`，识别所有 `FusedSchedulerNode` 和 `ExternKernel`
+1. 用上述命令提取 GPU fusion groups 概览
 2. 按**语义功能**分组：服务同一计算目的的相邻 fusion groups 合为一个 Supernode
 3. 在 NPU source 中标注每个 Supernode 对应的代码范围
 4. 估算每个 SN 占 step 时间的比例 → 确定优化优先级
 
-**划分原则**:
-- 语义边界优先（不以 kernel 名划分）
-- GPU 把哪些 ops 融合在一起 → 说明它们之间有优化机会
-- 按时间权重排优先级：先做最大的 SN
-- 大 SN 可继续细拆（如 Attention 拆为 prologue/core/epilogue）
+### ⚠️ 强制产出: Lab 骨架文件
 
-**产出**:
+Step 2 的产出**不是 markdown 表格**，而是为每个 SN 创建 benchmark 骨架：
+
+```bash
+mkdir -p benchmarks/supernodes
 ```
-| SN | 语义 | GPU kernels 数 | NPU 当前 kernel 数 | 占 step % | 优先级 |
+
+为每个 SN 创建 `benchmarks/supernodes/sn_<name>.py`，结构如下：
+
+```python
+"""
+SN-<NAME> Supernode Lab
+========================
+GPU fusion groups: op<X>_op<Y>_... (N ops → 1 kernel)
+GPU pre-compile ops:
+  - <op1>: <dtype> <shape>
+  - <op2>: ...
+GPU post-compile result:
+  - <what got fused/eliminated>
+NPU current implementation:
+  - <file>:<line> <op1>
+  - <file>:<line> <op2>
+  - ...
+Identified gaps:
+  - precision: <GPU dtype vs NPU dtype>
+  - layout: <transpose differences>
+  - API params: <GPU passes X, NPU doesn't>
+  - redundancy: <repeated/unnecessary ops>
+"""
+
+# ===== Real shapes from training (all regimes) =====
+SHAPES = {
+    "regime_0": ...,
+    "regime_1": ...,
+    "regime_2": ...,
+}
+
+# ===== B0: Control (current NPU implementation) =====
+def B0_control():
+    pass  # TODO: extract from training code
+
+# ===== Optimization candidates =====
+# TODO L0: <from API param gaps above>
+# TODO L1: <from redundancy gaps above>
+# TODO L2: <from dir(torch_npu) search>
+# TODO L3: <from layout/expression gaps above>
+# TODO L4: <compile scope candidates>
+
+# ===== Benchmark harness =====
+# TODO: warmup + timing + grad check
 ```
+
+**这就是 Step 2 的全部产出。** 分析直接嵌入代码注释里——不存在"先写表格再写代码"两步。
+
+**门禁规则**: 每个 SN 的 lab 骨架文件中，docstring 的 "GPU fusion groups" 和 "Identified gaps" 必须已填写，才能开始实现 TODO 中的优化方案。如果这些注释为空，说明 GPU 分析被跳过了——回去补。
 
 ---
 
 ## Step 3: 逐 Supernode 优化
 
-对每个 SN 依次执行 3a → 3b → 3c → 3d。
+在 Step 2 创建的 Lab 骨架基础上，逐个 SN 填充并运行。
 
-### 3a. GPU 对齐分析
+### 3a. 填充 Lab 骨架的 GPU 对齐信息
 
-对当前 SN 回答（详见 [references/supernode_analysis.md](references/supernode_analysis.md)）：
+打开当前 SN 的 `sn_<name>.py`，填写 docstring 中的所有字段：
 
 **精度对齐**:
 - GPU 在该 SN 用什么 dtype（input/compute/accumulator/output/saved_for_backward）？
@@ -95,7 +153,22 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 - 对该 SN 的 GPU 等价 API，列出其全部参数。做**逐参数对照映射**：GPU 有但 NPU 没传的，查 NPU API 是否有同语义的参数（名称可能完全不同）。
 - 特别注意：窗口/稀疏/mask 相关参数、精度控制参数、计算范围限制参数 — 这类参数不传时通常走最慢的默认路径。
 
-### 3b. 优化层级 (L0-L6)
+### 3a-bis. 从 Gap 推导候选方案
+
+docstring 填完后，将每个 gap 映射为 TODO 候选：
+
+| Gap 类型 | 映射到 |
+|---------|--------|
+| GPU API 有参数 NPU 没传 | → TODO L0 |
+| NPU 多了 cast/sync/重复计算 | → TODO L1 |
+| GPU 用了 fused API | → TODO L2 (搜 NPU 等价) |
+| GPU compile 消除了 transpose/简化表达式 | → TODO L3 |
+| GPU compile 将多 elementwise 融合为 1 kernel | → TODO L4 |
+| GPU backward 保存更少 tensor | → TODO L5 |
+
+将具体候选方案写入 lab 脚本的 TODO 注释中。
+
+### 3b. 实现并运行 Lab 中的候选方案
 
 按成本从低到高逐级尝试。**每级都必须测试或记录跳过原因。**
 
