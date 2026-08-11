@@ -169,6 +169,39 @@ docstring 填完后，将每个 gap 映射为 TODO 候选：
 
 将具体候选方案写入 lab 脚本的 TODO 注释中。
 
+### 3a-ter. GPU Compile 对齐候选 (强制)
+
+**除了上面按 gap 类型推导的通用候选外，每个 SN 必须有一组专门尝试复现 GPU compile 结果的候选。**
+
+GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**被融合/消除/简化。NPU 的目标是用任何可行方法达到等效状态（不限于 compile，任何能对齐 kernel 数量 + 精度 + 效率的方式都算）。
+
+**强制步骤**:
+
+1. **记录 GPU compile 后的目标状态**:
+   - 该 SN 在 GPU compile 后是几个 kernel？（从 ir_post_fusion.txt 数 FusedSchedulerNode + ExternKernel）
+   - 哪些 ops 被消除了？哪些被融合了？
+   - 输入/输出 dtype 是什么？中间有无 materialization？
+
+2. **记录 NPU 当前状态**:
+   - 该 SN 在 NPU eager 下是几个 kernel launch？
+   - 有无多余的 cast/copy/materialization？
+
+3. **生成 "对齐 GPU" 候选** — 尝试多种方式逼近 GPU 的 kernel 数和效率:
+   - `L-GPU-a`: `torch.compile(backend='npu')` 包裹 GPU fusion group 对应的 scope
+   - `L-GPU-b`: 搜索 NPU 官方 fused API 覆盖同 scope（一个 API call = GPU 的一个 fused kernel）
+   - `L-GPU-c`: 手动改写消除 GPU compile 消除的 ops（去 cast、去 materialization、去 transpose）
+   - `L-GPU-d`: 组合方案（API + compile + 手动的混合）
+   - 如果以上都不能对齐 kernel 数 → 记录差距和原因，标注为 NPU 平台限制
+
+4. **验证对齐程度** — Lab 报告中必须包含:
+   ```
+   GPU compile 后: N kernels, dtype=bf16, 无中间 materialization
+   NPU eager:      M kernels, dtype=..., 有/无额外 cast
+   NPU 优化后:     K kernels, dtype=..., (对齐程度: K/N)
+   ```
+
+**这不是 "试一次 compile 不行就算了"** — 如果 `backend='npu'` 的 compile 不能一步到位，要拆开看：GPU 融合的 ops 中，哪些子集可以被 NPU compile？哪些需要用 API 替代？哪些需要手动消除？分而治之，逼近目标。
+
 ### 3b. 实现并运行 Lab 中的候选方案
 
 按成本从低到高逐级尝试。**每级都必须测试或记录跳过原因。**
@@ -223,7 +256,10 @@ export PATH="/usr/local/Ascend/<version>/bisheng_toolkit/bishengir/bin:$PATH"
 - ❌ 不适合: 已是单个大算子（mm, attention, norm API）、tensor 很小（dispatch overhead > fusion gain）
 - 注意: `dynamic=False` 在多 regime 训练中每个 shape 编译一次后缓存
 
-⚡ **多卡注意**: 首次多卡 compile 可能崩溃（"unable to open output file kernel_meta/..."）→ 设 `export TORCH_NPU_COMPILE_CACHE_DIR=/tmp/npu_compile_cache`
+⚡ **多卡注意**: 首次多卡 compile 可能崩溃（"unable to open output file kernel_meta/..."）→ 每 rank 独立 cache 路径:
+```bash
+export TORCH_NPU_COMPILE_CACHE_DIR="/tmp/npu_compile_cache_${RANK:-0}"
+```
 
 ### 3c. Supernode Lab (强制)
 
