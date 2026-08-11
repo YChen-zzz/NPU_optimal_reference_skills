@@ -248,13 +248,32 @@ L4: <compile>       | ...     | ...     | ...     | ...      | ...
 - Lab 中发现的 winner 进入 3d 多卡 ablation；ablation 通过后才改训练代码
 - Lab 脚本**永久保留**，作为优化决策的证据（为什么选了这个方案、为什么跳了那个）
 
-### 3d. 多卡 Ablation
+### 3d. 多卡 Ablation (~60s 快速验证)
 
-**每个有增益的方案**:
-1. 创建独立文件（`train_gpt_short_X.py` + `run_short_X.sh`）
-2. 提交多卡短跑 → 结果写入独立 `ablation_X.log`
-3. 对比 baseline `step_avg`
-4. **只有 step_avg 下降才接受**
+**构造短跑脚本** (首次需创建，后续复用):
+
+从完整训练脚本派生一个 ~60 秒的短跑版本:
+- 等比压缩 total steps（如 2090 → 210 步，约 1/10）
+- 按相同比例映射所有 step-dependent schedule（lr、batch size、window size 的切换点）
+- 保持相同 seed、数据、初始状态
+- 输出格式不变（step_avg 可直接对比）
+
+```python
+# 短跑关键修改 (相对完整训练)
+num_scheduled_iterations = FULL_STEPS // 10  # 等比压缩
+num_extension_iterations = FULL_EXT // 10
+val_loss_every = num_scheduled_iterations + num_extension_iterations  # 最后才 validate
+```
+
+**Ablation 执行规则**:
+
+1. 先跑一次 baseline 短跑 → 记录 `step_avg` 作为对照 → 存入 `logs/baseline_short.log`
+2. 每个有增益的方案创建**独立文件**（`train_gpt_short_X.py` + `run_short_X.sh`）
+3. 提交多卡短跑 → 结果写入独立 `logs/sn_<name>_L<N>.log`
+4. 对比 baseline 的 `step_avg`
+5. **只有 step_avg 下降才接受**
+
+**注意**: 短跑的 `val_loss` 不用于判断正确性（步数太少未收敛）。正确性在 Lab 的 `cosine_similarity` 中已验证。短跑只验证**多卡环境下的真实速度增益**。
 
 ---
 
