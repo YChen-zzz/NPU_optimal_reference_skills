@@ -113,20 +113,51 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 - ❌ 不适合: 已是单个大算子（mm, attention, norm API）、tensor 很小（dispatch overhead > fusion gain）
 - 注意: `dynamic=False` 在多 regime 训练中每个 shape 编译一次后缓存
 
-### 3c. Benchmark
+### 3c. Supernode Lab (强制)
 
-写入 `benchmarks/supernodes/sn_<name>.py`
+**在修改任何训练代码之前**，必须为当前 SN 创建独立的 benchmark 脚本：`benchmarks/supernodes/sn_<name>.py`
 
-**必须包含**:
-- Forward + backward（`.sum().backward()`）
-- 所有 regime 的 shape
-- 梯度正确性: `cosine_similarity > 0.9999`
-- 对照 control 的 speedup
+这个脚本是该 SN 的**隔离实验室** — 所有优化方案在此验证后才能进入训练代码。
 
-**格式**:
+**脚本结构要求**:
+
+```python
+"""
+Supernode Lab: SN-<NAME>
+GPU Teacher: <GPU compile 前后做了什么，几个 kernel>
+NPU Current: <当前实现，几个 kernel launch>
+"""
+
+# 1. 真实 shape/dtype/layout (从训练代码中提取)
+# 2. Control: 当前实现 (forward + backward)
+# 3. L0-L6 各级候选方案 (每个都测)
+# 4. Benchmark: 每个方案跑 warmup + reps，报告 median/p95
+# 5. Correctness: 对比 control 的梯度 cosine similarity
+# 6. 所有 regime shape 都测 (不只测一个)
 ```
-Method | Shape1 fwd+bwd | Shape2 fwd+bwd | Shape3 fwd+bwd | Grad cos | vs Control
+
+**报告格式** (脚本输出):
 ```
+=== SN-<NAME> Supernode Lab ===
+GPU: <对齐信息>
+NPU: <当前信息>
+
+Method              | T=8192  | T=16384 | T=24576 | Grad cos | vs Ctrl
+----------------------------------------------------------------------
+B0: control         | X.XXXms | X.XXXms | X.XXXms | 1.0000   | 1.00x
+L0: <api param>     | ...     | ...     | ...     | ...      | ...
+L1: <eliminate>     | ...     | ...     | ...     | ...      | ...
+L2: <npu api>       | ...     | ...     | ...     | ...      | ...
+L3: <rewrite>       | ...     | ...     | ...     | ...      | ...
+L4: <compile>       | ...     | ...     | ...     | ...      | ...
+```
+
+**强制规则**:
+- 每个 SN 必须有对应的 lab 脚本，否则不允许修改训练代码
+- Lab 中必须测试所有适用的 L0-L6 方案（不适用的标注跳过原因）
+- 所有方案必须含 backward（优化前向但破坏梯度的无效）
+- Lab 中发现的 winner 进入 3d 多卡 ablation；ablation 通过后才改训练代码
+- Lab 脚本**永久保留**，作为优化决策的证据（为什么选了这个方案、为什么跳了那个）
 
 ### 3d. 多卡 Ablation
 
