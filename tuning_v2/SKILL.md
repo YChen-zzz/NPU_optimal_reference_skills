@@ -91,8 +91,9 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 - 有无 host-device 同步点（.item(), .tolist(), CPU scalar → device）？
 
 **API 参数**:
-- NPU API 是否有未使用的加速参数？
-- GPU 传了什么参数 NPU 没传？
+- 对该 SN 涉及的每个 NPU API，打印其完整签名/docstring，**逐个参数**检查是否有未使用的。
+- 对该 SN 的 GPU 等价 API，列出其全部参数。做**逐参数对照映射**：GPU 有但 NPU 没传的，查 NPU API 是否有同语义的参数（名称可能完全不同）。
+- 特别注意：窗口/稀疏/mask 相关参数、精度控制参数、计算范围限制参数 — 这类参数不传时通常走最慢的默认路径。
 
 ### 3b. 优化层级 (L0-L6)
 
