@@ -45,6 +45,8 @@
 3. **Backward 正确传播梯度**（部分 API 无 autograd 注册）
 4. 多 shape 测试
 
+**精度对比陷阱**: 测试 NPU API 时，必须和 control 使用**相同的精度路径**。如果 control 有额外的 `.float()` cast 而 NPU API 直接接受 bf16，对比时需要把 control 的 `.float()` 也去掉（先确认这个 cast 是否是移植遗留），否则在测量速度时会把 "NPU API 本身" 和 "去掉 cast" 的增益混在一起，可能得出"API 更慢"的错误结论。
+
 **原则**:
 - 平台 fused op 通常内部精度处理更优（accumulated f32 etc）
 - 浮点非结合律: 改变计算顺序在低精度下可能累积误差 → 实测验证
@@ -66,7 +68,11 @@
 
 **scope 策略**: 从纯计算、shape 稳定、高频执行的片段开始，逐步扩大。验证 compile 后确实产生 kernel fusion（对比 pre/post-compile profile）。
 
-**多卡**: 编译器 PATH 确认; 独立 cache 路径; `dynamic=False` 对固定 shape-per-regime 最优。
+**编译器 PATH 排错**: 如果 compile 报 "npuc"、"bishengir" 相关错误（如 "Invalid bishengir path format"），说明 NPU kernel 编译器不在 PATH 中。执行 `find /usr/local/Ascend -name "bishengir-compile"` 找到实际路径，加入 PATH。这个二进制通常在 `ascend-toolkit/*/bisheng_toolkit/bishengir/bin/` 或 `cann-*/tools/bishengir/bin/` 下。
+
+**多卡 compile 崩溃**: 16 卡训练首次 compile 可能因多进程同时写同一个 `kernel_meta/` 目录崩溃（错误信息含 "unable to open output file kernel_meta/..."）。解决: 设置 `export TORCH_NPU_COMPILE_CACHE_DIR=/tmp/npu_compile_cache` 或每 rank 独立 cache 路径。
+
+**多卡注意**: `dynamic=False` 对固定 shape-per-regime 最优（N regime = N 次编译后缓存）。
 
 ### L5: Custom Autograd Function
 

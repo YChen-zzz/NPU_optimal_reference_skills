@@ -67,7 +67,7 @@ op11-op16:  FusedSchedulerNode  (Q-norm + K-norm + Q-rotary + K-rotary)
 对比 GPU source 和 NPU source，逐项检查:
 
 - [ ] dtype 差异: GPU 用 bf16 的地方 NPU 是否多了 .float()？
-- [ ] API 差异: GPU 传了什么参数 NPU 没传？(如 window_size → pre_tockens)
+- [ ] API 参数逐项映射: 打印 GPU API 和 NPU API 的**完整签名**，逐参数对照。名称可能完全不同（如 GPU `window_size` 对应 NPU `pre_tockens`）。未传的参数通常走最慢默认路径。
 - [ ] Layout: GPU 直接 matmul 的地方 NPU 是否多了 .T + F.linear？
 - [ ] Saved tensors: GPU backward 保存了什么 vs NPU autograd 保存什么？
 - [ ] Host sync: NPU 是否有 .tolist()/.item() 等 device→host sync？
