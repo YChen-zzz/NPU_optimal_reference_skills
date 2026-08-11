@@ -17,6 +17,17 @@
 
 零代码改动。对每个算子 API 查看完整签名，对比 GPU 侧同功能 API 传了哪些参数。检查运行时环境变量（async dispatch, communication buffer, compile cache）。
 
+**NPU 常用环境变量** (在 run.sh 中 export，训练代码无需改动):
+
+| 变量 | 值 | 作用 | 注意 |
+|------|---|------|------|
+| `TASK_QUEUE_ENABLE` | `1` 或 `2` | 异步 kernel 派发。减少 host 等待，让 kernel launch 流水化。`2` 更激进但可能引入调度 overhead | 必须在 `import torch_npu` 前设置。不同 workload 最优值不同，需实测对比 |
+| `HCCL_BUFFSIZE` | `120` (MB) | 通信 buffer 大小。增大可减少分片次数但占用更多内存 | 默认值可能不是最优，需要 ablation |
+| `COMBINED_ENABLE` | `1` | 通信算子合并。将相邻小 collective 合并为一次 | 不一定有效，某些 workload 反而更慢 |
+| `ASCEND_LAUNCH_BLOCKING` | `1` | 同步执行（仅 debug 用）。让所有 op 同步执行方便定位报错 | **性能测试时禁用** |
+
+所有环境变量都应作为独立的 L0 候选方案在 Lab 中逐个测试（不要一次全加）。
+
 ### L1: 消除冗余
 
 **静态扫描** (grep, 不需 profiling):
