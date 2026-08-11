@@ -1,6 +1,6 @@
 ---
 name: npu-supernode-tuning
-description: NPU 训练/推理性能优化。以 GPU compiled evidence 为参照，自动拆分计算图为 Supernode，逐节点穷尽优化方法并用多卡 ablation 验证。适用于 GPU→NPU 迁移调优、NPU 原生训练加速。
+description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自动拆分计算图为 Supernode，逐节点穷尽优化方法并用多卡 ablation 验证。适用于 GPU→NPU 迁移调优、NPU 原生训练加速。
 ---
 
 # NPU Supernode 调优
@@ -163,4 +163,3 @@ Method | Shape1 fwd+bwd | Shape2 fwd+bwd | Shape3 fwd+bwd | Grad cos | vs Contro
 - ❌ 用单机 benchmark 直接宣称多卡增益
 - ❌ 一次加多个未 ablation 的优化
 - ❌ 宣布"没有优化空间"（换方式再试）
-- ❌ 把 compile 留到最后
