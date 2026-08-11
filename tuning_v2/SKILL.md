@@ -171,7 +171,7 @@ docstring 填完后，将每个 gap 映射为 TODO 候选：
 
 ### 3a-ter. GPU Compile 对齐候选 (强制)
 
-**除了上面按 gap 类型推导的通用候选外，每个 SN 必须有一组专门尝试复现 GPU compile 结果的候选。**
+**除了上面按 gap 类型推导的通用候选外，每个 SN 必须至少两组专门尝试复现 GPU compile 结果的候选。**
 
 GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**被融合/消除/简化。NPU 的目标是用任何可行方法达到等效状态（不限于 compile，任何能对齐 kernel 数量 + 精度 + 效率的方式都算）。
 
