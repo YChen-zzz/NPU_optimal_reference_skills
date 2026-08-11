@@ -28,6 +28,8 @@ description: NPU 训练/推理性能优化。以 GPU compiled evidence 为参照
 
 从 GPU evidence pack 中提取（详见 [references/gpu_teacher_reading.md](references/gpu_teacher_reading.md)）:
 
+若没有现成 evidence pack，需要在 GPU 机器上采集（详见 [references/gpu_teacher_collection.md](references/gpu_teacher_collection.md)）。
+
 - **Compile 前 FX graph**: 每个 op 的 dtype、shape、调用顺序
 - **Compile 后 IR (ir_post_fusion.txt)**: 哪些 ops 被融合为一个 kernel
 - **Profiling summary**: 各类 kernel 的时间占比
