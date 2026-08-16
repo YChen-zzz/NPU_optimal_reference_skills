@@ -26,19 +26,17 @@ NPU_two_stage_tuning/
 ├── SKILL.md                    ← 两阶段流程编排
 ├── README.md                   ← 本文件
 ├── skills_phase1/              ← Stage 1: GPU Teacher Supernode 调优
-│   └── tuning_v2/
-│       ├── SKILL.md
-│       └── references/
+│   ├── SKILL.md
+│   └── references/
 └── skills_phase2/              ← Stage 2: Profiling 驱动优化
-    └── model_opt/
-        ├── SKILL.md
-        ├── references/
-        ├── 01_preparation/
-        ├── 02_bottleneck_analysis/
-        ├── 03_optimization/
-        ├── 04_accuracy_assurance/
-        ├── 05_engineering/
-        └── 06_evidence_db/
+    ├── SKILL.md
+    ├── references/
+    ├── 01_preparation/
+    ├── 02_bottleneck_analysis/
+    ├── 03_optimization/
+    ├── 04_accuracy_assurance/
+    ├── 05_engineering/
+    └── 06_evidence_db/
 ```
 
 ## 使用

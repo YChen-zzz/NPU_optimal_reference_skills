@@ -15,7 +15,7 @@ GPU compile 提供了"哪些 ops 可以融合/消除"的 ground truth，但它�
 
 **方法**：从 GPU `ir_post_fusion.txt` 提取 fusion groups → 划分 Supernode → 逐 SN 在 Lab 中穷举 L0-L6 方案 → 多卡 ablation 验证 → 组合进 full training。
 
-**详见**：[skills_phase1/tuning_v2/SKILL.md](skills_phase1/tuning_v2/SKILL.md)
+**详见**：[skills_phase1/SKILL.md](skills_phase1/SKILL.md)
 
 ## 阶段切换判定
 
@@ -36,7 +36,7 @@ Agent 在满足以下**任一**条件时，可以判定 Stage 1 结束并切换�
 
 **方法**：构造短跑脚本 → 采集 L1 → 双线分析（Line A 源码 + Line B Profiling）→ 下界分析确定方向 → 四维度优化实施 → 精度验证 → 收益确认 → 迭代。
 
-**详见**：[skills_phase2/model_opt/SKILL.md](skills_phase2/model_opt/SKILL.md)
+**详见**：[skills_phase2/SKILL.md](skills_phase2/SKILL.md)
 
 **Stage 2 的起点特殊性**：
 - Stage 1 已完成的优化是 Stage 2 的 baseline（不重做）
