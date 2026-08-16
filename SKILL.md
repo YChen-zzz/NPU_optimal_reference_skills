@@ -22,8 +22,7 @@ GPU compile 提供了"哪些 ops 可以融合/消除"的 ground truth，但它�
 Agent 在满足以下**任一**条件时，可以判定 Stage 1 结束并切换到 Stage 2：
 
 1. **所有高优先级 Supernode 的 L0-L4 已测完**：progress.md 中高优先级 SN 的所有格子都已填满（✅ 或 ❌+原因）
-2. **Supernode Lab 增益收敛**：连续 2 个 SN 的 winner 在多卡 ablation 中增益 < 2%
-3. **GPU Teacher 不可用/不充分**：无 IR 数据、或 IR 覆盖不全（如只有 forward 无 backward），无法继续 Supernode 分析
+2. **GPU Teacher 不可用/不充分**：无 IR 数据、或 IR 覆盖不全（如只有 forward 无 backward），无法继续 Supernode 分析
 
 **切换时必须产出**：
 - 当前累计优化结果（step_avg 改善量）
