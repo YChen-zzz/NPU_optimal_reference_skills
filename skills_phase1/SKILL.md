@@ -327,12 +327,21 @@ val_loss_every = num_scheduled_iterations + num_extension_iterations  # 最后�
 **Ablation 执行规则**:
 
 1. 先跑一次 baseline 短跑 → 记录 `step_avg` 作为对照 → 存入 `logs/baseline_short.log`
-2. 每个有增益的方案创建**独立文件**（`train_gpt_short_X.py` + `run_short_X.sh`）
-3. 提交多卡短跑 → 结果写入独立 `logs/sn_<name>_L<N>.log`
+2. 每个有增益的方案放入 `ablations/` 子目录（见下方「目录结构」），不要放在项目根目录
+3. 提交多卡短跑 → 结果写入 `logs/sn_<name>_L<N>.log`
 4. 对比 baseline 的 `step_avg`
 5. **只有 step_avg 下降才接受**
 
-**注意**: 短跑的 `val_loss` 不用于判断正确性（步数太少未收敛）。正确性在 Lab 的 `cosine_similarity` 中已验证。短跑只验证**多卡环境下的真实速度增益**。
+**注意**: 对于 Lab 阶段"严格通过"的方案，短跑的 `val_loss` 不用于判断正确性（步数太少未收敛），短跑只验证多卡环境下的真实速度增益。
+
+**条件通过方案的短跑验证**:
+
+Lab 精度检查采用分级验收（详见 [references/npu_optimization_patterns.md](references/npu_optimization_patterns.md)「验证门禁」）。对于"条件通过"的方案（高增益 + 误差在 dtype 精度可解释范围内，如 bf16 下 relative_error ~1e-3 量级），短跑同时承担**速度验证 + 精度观察**双重角色：
+
+1. 正常跑短跑 ablation，记录 `step_avg` 和 `val_loss`
+2. 如果 `val_loss` 在自然波动内（与 baseline 短跑的 val_loss 差距合理）→ 暂时 accept
+3. 如果 `val_loss` 明显异常 → 该方案降级为拒绝，不进入组合版本
+4. 条件通过的方案在 progress.md 中标记为 `✅cond`（区别于严格通过的 `✅`），便于 full training 阶段追溯
 
 ---
 
@@ -342,6 +351,19 @@ val_loss_every = num_scheduled_iterations + num_extension_iterations  # 最后�
 
 如果 full run 结果 < target：完成。
 如果未达标：回到 Step 2 检查是否有遗漏 SN，或在现有 SN 上继续深入下一层级。
+
+### 回退策略（val_loss 超标时）
+
+当 full training 的 val_loss 超出要求时，优先排查"条件通过"的方案（progress.md 中标记为 `✅cond` 的条目）：
+
+1. **按嫌疑度排序**：Lab 阶段误差越大的方案嫌疑越高（cosine 越低 / relative_error 越大 → 排越前）
+2. **逐个回退验证**：从最高嫌疑开始，去掉该方案后重跑 full training（或先用短跑快速筛查）
+3. **定位元凶后决策**：
+   - 确认是某个条件通过方案导致 → 移除该方案，保留其余优化
+   - 多个条件通过方案的组合效应 → 逐步缩小组合范围
+   - 所有条件通过方案去掉后仍超标 → 问题在严格通过方案的组合，按常规 debug 流程处理
+
+**注意**：回退不意味着"条件通过"机制有问题——大多数情况下这些方案会通过 full training 验证。回退机制只是保底手段，让高增益方案有机会证明自己。
 
 ---
 
@@ -399,8 +421,8 @@ Agent **只有**满足以下**全部**条件时才能停止当前 SN：
 
 如果对话过长需要重新开始：
 1. 读 `benchmarks/supernodes/progress.md` 恢复状态
-2. 读已存在的 `sn_*.py` lab 脚本恢复历史结果
-3. 读 `ablation_*.log` 恢复多卡验证结果
+2. 读已存在的 `benchmarks/supernodes/sn_*.py` lab 脚本恢复历史结果
+3. 读 `logs/sn_*.log` 恢复多卡验证结果
 4. 从 progress 表中第一个未完成的格子继续
 
 ---
@@ -414,15 +436,59 @@ Agent **只有**满足以下**全部**条件时才能停止当前 SN：
 
 ---
 
+## 项目目录结构
+
+Phase 1 会产生大量实验脚本（Lab、短跑变体、probe、profiling 变体等）。**所有派生文件必须放入对应子目录，禁止在项目根目录平铺。**
+
+```
+项目根目录/
+├── train_gpt.py                    # 唯一的主训练脚本（持续就地修改）
+├── run.sh                          # 唯一的主启动脚本
+├── benchmarks/
+│   └── supernodes/
+│       ├── progress.md             # 优化进度追踪
+│       └── sn_<name>.py            # 各 SN 的 Lab 脚本
+├── ablations/                      # 多卡 ablation 用的短跑变体
+│   ├── train_gpt_short_baseline.py # 短跑 baseline（从主脚本派生，仅一份）
+│   ├── train_gpt_short_<opt>.py    # 各方案的短跑脚本
+│   ├── run_short_baseline.sh
+│   └── run_short_<opt>.sh
+├── probes/                         # 单算子探测脚本
+│   ├── probe_<name>.py
+│   └── run_probe_<name>.sh
+├── logs/                           # 所有运行日志
+│   ├── baseline_short.log
+│   ├── sn_<name>_L<N>.log
+│   └── final_full_run.log
+├── profiling/                      # profiling 输出（.gitignore）
+└── custom_op/                      # 自定义算子（如有）
+```
+
+**核心规则**：
+- `train_gpt.py` 是唯一的主脚本——ablation 通过的优化合入这里，不创建 `train_gpt_full_*.py` 变体
+- 短跑变体和 run 脚本放 `ablations/`，probe 脚本放 `probes/`
+- Ablation 通过后，对应的 `ablations/` 文件可以保留作为记录，但不是必须的；优化决策的证据在 Lab 脚本（`benchmarks/supernodes/sn_*.py`）中
+- profiling 相关的 run 脚本也放 `ablations/`（如 `run_profile_<opt>.sh`），或直接在主 `run.sh` 上加 profiler 参数
+
 ## Git 与日志管理
 
-### Git (最小化)
+### Git 分支策略
 
-1. **优化开始前**: `git commit -am "baseline before optimization"` — 安全回滚点
-2. **每个 SN ablation 通过并合入 train_gpt.py 后**: `git commit -am "SN-<name>: <winner>"` — checkpoint
+借鉴 Phase 2 的分支管理，Stage 1 也使用工作分支：
+
+```
+main（稳定版本，不直接修改）
+  └── optimize/stage1（主工作分支）
+        ├── 逐 SN 实施优化，每个 SN ablation 通过后 commit
+        └── 所有 SN 完成后合入 main
+```
+
+1. **优化开始前**: 从 main 创建 `optimize/stage1` 分支，`git commit -am "baseline before optimization"` 作为安全回滚点
+2. **每个 SN ablation 通过并合入 train_gpt.py 后**: `git commit -am "SN-<name>: <winner> (step_avg Xms→Yms)"`
 3. **需要回滚**: `git checkout -- train_gpt.py` 回到上一个 checkpoint
+4. **Stage 1 完成后**: 用户确认后合入 main
 
-不要为每个实验创建 branch（用独立文件隔离代替），不要在 git 操作上花超过 1 分钟。
+不要在 git 操作上花超过 1 分钟。
 
 ### 日志 (集中命名)
 
@@ -431,6 +497,7 @@ Agent **只有**满足以下**全部**条件时才能停止当前 SN：
 ```
 logs/
 ├── baseline.log                    # 初始 baseline
+├── baseline_short.log              # 短跑 baseline
 ├── sn_loss_L4c_compile_sig.log     # SN-Loss L4c ablation
 ├── sn_attn_L0a_pre_tockens.log     # SN-Attn L0a ablation
 ├── v5_all_combined.log             # 组合版本
@@ -439,7 +506,7 @@ logs/
 
 每个 run script 统一格式：
 ```bash
-torchrun ... train_gpt_short_X.py 2>&1 | tee logs/<descriptive_name>.log
+torchrun ... ablations/train_gpt_short_X.py 2>&1 | tee logs/<descriptive_name>.log
 ```
 
 **快速对比所有实验结果**：
@@ -458,3 +525,4 @@ grep "step:.*val_loss" logs/*.log
 - ❌ 用单机 benchmark 直接宣称多卡增益
 - ❌ 一次加多个未 ablation 的优化
 - ❌ 宣布"没有优化空间"（换方式再试）
+- ❌ 在项目根目录创建 `train_gpt_*.py` 或 `run_*.sh` 变体文件（放 `ablations/` 或 `probes/`）

@@ -114,10 +114,25 @@ L0-L5 全部不足时。
 - 等比压缩 total steps + 所有 schedule
 - 固定 seed/data/state，对比 val loss
 
-**正确性标准**:
-- 前向: max_abs_diff 在 dtype 精度内
-- 梯度: cosine_similarity > 0.9999
-- 训练: val_loss 在自然波动内
+**正确性标准 — 分级验收**:
+
+Lab 阶段的精度检查采用分级机制，避免过早拒绝高增益方案：
+
+| 级别 | 判定条件 | 处理 |
+|------|---------|------|
+| **严格通过** | 前向 max_abs_diff 在 dtype 精度内，梯度 cosine > 0.9999 | 直接进入 ablation |
+| **条件通过** | 误差超出严格阈值但仍在 dtype 精度可解释范围内，且方案增益显著 | 标记为"待短跑验证"，进入 ablation 观察 val_loss |
+| **拒绝** | 误差明显超出 dtype 精度范围，或无法用精度路径差异解释 | 不进入 ablation |
+
+**"条件通过"的判断原则**:
+- 不设硬编码阈值，由 agent 根据 dtype 和场景综合判断
+- 例：bf16 训练中 relative_error 在 ~1e-3 量级、cosine 略低于 0.9999 但增益 >10%，属于典型的条件通过场景——bf16 本身的精度就在这个量级，误差可能来自计算顺序差异而非逻辑错误
+- 关键是判断误差来源：如果能解释为 dtype 精度限制或浮点结合律差异 → 条件通过；如果是逻辑错误（如漏算某项）→ 拒绝
+
+**条件通过方案的后续验证链**:
+1. 短跑 ablation：观察 val_loss 变化是否在自然波动内
+2. 短跑通过 → 暂时 accept，进入组合版本
+3. Full training：如果 val_loss 超标，按嫌疑度逐个回退条件通过的方案（见 SKILL.md「回退策略」）
 
 **何时完整验证**: 改 backward/optimizer/communication/state; 新 20% milestone; 最终版。
 
