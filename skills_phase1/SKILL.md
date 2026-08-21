@@ -324,6 +324,14 @@ num_extension_iterations = FULL_EXT // 10
 val_loss_every = num_scheduled_iterations + num_extension_iterations  # 最后才 validate
 ```
 
+**⚠️ 短跑与 Full Training 的关系（单向派生，禁止反推）**:
+
+短跑脚本是从原始 `train_gpt.py` 的训练参数**单向派生**的产物。Full training 的参数**永远以 baseline git commit 中的原始 `train_gpt.py` 为唯一真相来源**，禁止从短跑脚本反向推算 full training 参数。
+
+- 短跑创建时，记录派生来源：在短跑脚本头部注释中标注 `# Derived from: train_gpt.py @ commit <hash>` 和原始完整参数值
+- Full training 恢复时：直接 `git show <baseline_commit>:train_gpt.py` 获取原始训练参数，在当前优化版本上恢复这些参数值
+- **禁止**从短跑参数 × 压缩比来还原 full training 参数（多次修改短跑后比例可能漂移）
+
 **Ablation 执行规则**:
 
 1. 先跑一次 baseline 短跑 → 记录 `step_avg` 作为对照 → 存入 `logs/baseline_short.log`
@@ -348,6 +356,8 @@ Lab 精度检查采用分级验收（详见 [references/npu_optimization_pattern
 ## Step 4: 组合 + Full Run
 
 合并所有 ablation 通过的优化 → full run → 验证 train_time + val_loss。
+
+**Full Run 参数来源**：full training 的训练参数（total steps、schedule 等）从 baseline git commit 的原始 `train_gpt.py` 中获取，不从短跑脚本反推。
 
 如果 full run 结果 < target：完成。
 如果未达标：回到 Step 2 检查是否有遗漏 SN，或在现有 SN 上继续深入下一层级。

@@ -109,7 +109,7 @@ Phase 5  工程化提交（git commit + evidence_db 记录）
 1. 全量精度验证 —— 与原始 baseline 对比，确认精度无退化
 2. 重新采集 **wall-clock + L0**（训练场景使用短跑脚本）—— wall-clock 确认真实收益，L0 与基线/上一轮比对确认收益来源（gap A/B 变化）
 3. 两项均通过后才可进入提交流程；任一不通过则回退或调整
-4. **最终性能确认（训练场景）**：所有迭代轮次完成、用户确认停止后，运行一次 **full training** 确认绝对性能（train_time + val_loss）。短跑的 step_avg 改善不替代 full training 的最终验证
+4. **最终性能确认（训练场景）**：所有迭代轮次完成、用户确认停止后，运行一次 **full training** 确认绝对性能（train_time + val_loss）。短跑的 step_avg 改善不替代 full training 的最终验证。Full training 参数从 baseline git commit 的原始脚本获取，不从短跑反推
 
 **★ 确认节点 B**：向用户展示本批总结（优化点、性能收益、精度数据、未采纳方案），询问是否确认提交。用户确认后才执行 git commit。
 

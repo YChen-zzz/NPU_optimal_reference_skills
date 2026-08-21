@@ -152,6 +152,8 @@ val_loss_every = num_scheduled_iterations + num_extension_iterations
 - Phase 4 收益确认：用短跑脚本采 wall-clock + L0
 - 优化 ablation 验证：直接复用短跑脚本对比 step_avg
 
+**⚠️ 单向派生原则**：短跑脚本是从原始 `train_gpt.py` 单向派生的产物。Full training 恢复时**必须从 baseline git commit 获取原始训练参数**（`git show <baseline_commit>:train_gpt.py`），禁止从短跑参数 × 压缩比反推。短跑在迭代中可能被调整，其参数不再是 full training 的可靠逆运算。
+
 **regime 覆盖验证**：短跑脚本构造后，必须验证其输出覆盖了完整训练的所有 regime（通过 log 确认所有 schedule 切换点都被触发）。
 
 ### Profiler 接入
