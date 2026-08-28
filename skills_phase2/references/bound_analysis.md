@@ -35,7 +35,7 @@ Tier 1 不需要精确——目的是给出物理极限的量级，不是精确�
 
 1. `wall_clock / L0_Computing < 1.1`（gap B ≈ 0）——除非有缩小 gap A 的手段，否则停止
 2. gap A 主导（gap A / Tier 1 显著）且 gap B / Tier 3 < 5%——性能受限于 kernel 实现效率，需图编译/量化/换 CANN
-3. 连续 2 轮优化均 < 2% wall-clock 改进
+3. 连续 10 轮优化均 < 0.5% wall-clock 改进
 4. 所有候选被拒绝且无新候选产生
 
 终局判断前必须穷尽 NPU 融合算子库——融合算子可同时缩小 gap A（减少 kernel 数量提升带宽利用率）和 gap B（减少 dispatch 次数），是 Python 层唯一能影响 gap A 的手段。"compute-bound 终局"判断前必须检查 host 开销来源（D2H 转换、格式转换、编译开销），不能仅看 utilization 数字。
