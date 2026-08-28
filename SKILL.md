@@ -28,7 +28,7 @@ Agent 在满足以下**任一**条件时，可以判定 Stage 1 结束并切换�
 - 当前累计优化结果（step_avg 改善量）
 - 各 SN 的最终状态（已优化 / 平台限制 / 未覆盖）
 - 明确声明："Stage 1 结束，切换到 Stage 2 Profiling 驱动优化"
-- **一次 full training 确认 Stage 1 的绝对性能**（train_time + val_loss），作为 Stage 2 的 baseline。此规则独立于最终优化目标——不因"距离目标还远"而跳过
+- **建议运行一次 full training 确认 Stage 1 的绝对性能**（train_time + val_loss），作为 Stage 2 的 baseline。此建议独立于最终优化目标——不应因"距离目标还远"而跳过
 
 ## Stage 2: Profiling 驱动优化
 
