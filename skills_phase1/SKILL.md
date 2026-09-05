@@ -68,6 +68,7 @@ sed -n '<start>,<end>p' ir_post_fusion.txt
 2. 按**语义功能**分组：服务同一计算目的的相邻 fusion groups 合为一个 Supernode
 3. 在 NPU source 中标注每个 Supernode 对应的代码范围
 4. 估算每个 SN 占 step 时间的比例 → 确定优化优先级
+5. **progress.md 中的 SN 行按占比降序排列**——第一行是占比最大的 SN，Step 3 严格按此顺序执行
 
 ### ⚠️ 强制产出: Lab 骨架文件
 
@@ -101,6 +102,7 @@ Identified gaps:
 """
 
 # ===== Real shapes from training (all regimes) =====
+# 必须在训练代码中插入 print(x.shape, x.dtype) 实际运行一次获取，禁止手动推断
 SHAPES = {
     "regime_0": ...,
     "regime_1": ...,
@@ -130,22 +132,23 @@ def B0_control():
 
 ## Step 3: 逐 Supernode 优化
 
-在 Step 2 创建的 Lab 骨架基础上，逐个 SN 填充并运行。
+在 Step 2 创建的 Lab 骨架基础上，**按 step 占比从大到小**逐个 SN 填充并运行。占比最大的 SN 最先做——它的优化对 E2E 影响最大，也最值得在 L0-L4 上花时间。禁止跳过高占比 SN 去做低占比 SN。
+
+**低占比 SN 的精简策略**：对于 step 占比较小的 SN（如低于 1%），完成 L0-L2（API 参数、消除冗余、NPU 融合 API），如果没有发现明显优化点，可以跳过 L3-L4，在 progress.md 中标注 `skip: 占比 X%，L0-L2 无明显优化点`。不必为每个 SN 都跑完整的 L0-L4。
 
 ### 3a. 填充 Lab 骨架的 GPU 对齐信息
 
 打开当前 SN 的 `sn_<name>.py`，填写 docstring 中的所有字段：
 
-**精度对齐**:
-- GPU 在该 SN 用什么 dtype（input/compute/accumulator/output/saved_for_backward）？
-- NPU 是否多了 cast（.float()/.type_as()/.to()）？
-- 哪些 cast 是精度必需的，哪些是移植遗留？
+**精度对齐（强制）**:
 
-⚡ **移植遗留 `.float()` ≠ 数学语义**:
+对该 SN 中的每个 `.float()` / `.type_as()` / `.to(torch.float32)`，**必须**执行以下判定，不允许因用户语义约束而跳过分析：
 
-GPU→NPU 移植时经常在 loss/norm 前插入 `.float()`，但 GPU 实际用 bf16。判定方法：读 GPU source + compile shapes，确认该位置 GPU 是否有 `.float()`。如果没有 → 移植遗留。
+1. 读 GPU source 同一位置，确认 GPU 是否有这个 cast
+2. 如果 GPU 没有 → 标记为「移植遗留」，归入 L1 消除冗余候选
+3. 如果 GPU 也有 → 标记为「原始设计」，不动
 
-**移除移植遗留的 `.float()` 是恢复原始语义，不是修改语义。** 即使用户要求"不改 loss 数学语义"，这仍然合规——GPU 设计者的意图就是 bf16 计算，移植时加的 `.float()` 反而偏离了原始设计。真正的数学语义修改是改公式、改 reduction、改超参数。
+移除移植遗留的 `.float()` 是恢复原始语义，不是修改语义——GPU 从未使用这个 cast，移植时加的 `.float()` 反而偏离了原始设计。即使用户要求"不改数学语义"，移除移植遗留仍然合规。
 
 **Layout 对齐**:
 - 有无不必要的 transpose / .contiguous() / .view() vs .reshape()？
@@ -236,7 +239,7 @@ GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**�
 
 **方案命名**: Lab 中用 `B0`(control) + `L<级别><序号>` 命名（如 `L2a`, `L2b`, `L3a`...）。
 
-**累计搜索**: 每级的 winner 成为下一级的 parent baseline。最终报告 cumulative gain vs B0。
+**累计搜索**: 每级的 winner 成为下一级的 parent baseline。最终报告 cumulative gain vs B0。**特别是 L4 (compile)：必须包含当前累计 winner 的编译版本作为候选之一**——不管 winner 来自 L0/L1/L2/L3 哪一级，先把它原样 compile 测一次，再尝试其他 scope。
 
 **L4 (compile) 关键知识**:
 
