@@ -10,7 +10,7 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 1. **按 step 占比从大到小做。** 大头优先，低占比 SN 可精简。
 2. **GPU 是参照不是答案。** 对齐优化意图，用 NPU 方法实现。
 3. **移植遗留 ≠ 数学语义。** GPU 训练中没有的 `.float()` 是移植遗留，移除它是恢复原始语义，即使用户说"不改数学语义"也合规。
-4. **Forward + backward + 真实 shape 才算有效 benchmark。** Shape 必须从训练代码 print 获取，禁止手动推断。
+4. **Forward + backward + 真实 shape 才算有效 benchmark。**
 5. **单机 benchmark ≠ 多卡增益。** 必须 ablation 验证。
 6. **不因单次失败放弃。** 追根因，换方式再试。
 
@@ -39,6 +39,8 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 
 为每个 SN 创建 Lab 骨架 `benchmarks/supernodes/sn_<name>.py`，使用 [references/lab_template.py](references/lab_template.py) 中的模板。
 
+**Step 2 必须创建 `benchmarks/supernodes/progress.md`**，格式见下方「进度文件」。这是 Step 3 的前置条件——没有 progress.md 不允许开始优化。
+
 **门禁**: Lab 骨架中 `DTYPE_PATH`、`CAST_AUDIT` 和 `SHAPES` 未填写时，禁止实现候选方案。
 
 ---
@@ -46,6 +48,8 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 ## Step 3: 逐 Supernode 优化
 
 **按 step 占比从大到小**逐个 SN 执行。禁止跳过高占比 SN 去做低占比 SN。
+
+**每次只能有一个 SN 处于 `in_progress`**。必须把当前 SN 做到 `done`（或有明确的占比跳过理由）后，才能开始下一个 SN。禁止同时推进多个 SN。
 
 **低占比 SN（如低于 1%）**：完成 L0-L2，如果没有明显优化点，可跳过 L3-L4，在 progress.md 标注 `skip: 占比 X%，L0-L2 无明显优化点`。
 
@@ -175,7 +179,7 @@ Agent 每次启动时先读此文件，从上次停下的地方继续。
 
 - ❌ 因用户语义约束跳过 `.float()` 分析（必须先查 GPU source 再决定）
 - ❌ L4 只编译 eager winner 不编译其他代数表达族
-- ❌ Lab 中用手动推断的 shape（必须 print 捕获）
+- ❌ 同时推进多个 SN（必须逐个完成）
 - ❌ 跳过高占比 SN 去做低占比 SN
 - ❌ 因一次报错放弃方向
 - ❌ 用单机 benchmark 直接宣称多卡增益
