@@ -39,7 +39,7 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 
 为每个 SN 创建 Lab 骨架 `benchmarks/supernodes/sn_<name>.py`，使用 [references/lab_template.py](references/lab_template.py) 中的模板。
 
-**门禁**: Lab 骨架中 `PRECISION_AUDIT` 和 `SHAPES` 未填写时，禁止实现候选方案。
+**门禁**: Lab 骨架中 `DTYPE_PATH`、`CAST_AUDIT` 和 `SHAPES` 未填写时，禁止实现候选方案。
 
 ---
 
@@ -51,15 +51,17 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 
 ### 每个 SN 的强制流程
 
-#### Gate 1: 精度对齐（填 Lab 中的 PRECISION_AUDIT）
+#### Gate 1: 精度对齐（填 Lab 中的 DTYPE_PATH + CAST_AUDIT）
 
-对该 SN 中的**每个** `.float()` / `.type_as()` / `.to(torch.float32)`：
+**Part A**: 记录该 SN 在 GPU 和 NPU 上的完整 dtype 路径（input/compute/output/weight），找出不一致的地方。
+
+**Part B**: 对该 SN 中的**每个** `.float()` / `.type_as()` / `.to(torch.float32)`：
 
 1. 读 GPU source 同一位置，确认 GPU 是否有这个 cast
 2. GPU 没有 → 标记为「移植遗留」，归入 L1 候选
 3. GPU 也有 → 标记为「原始设计」，不动
 
-**不允许因用户语义约束而跳过此分析。** 必须填入 Lab 的 `PRECISION_AUDIT` dict，assert 会检查。
+**不允许因用户语义约束而跳过此分析。** 必须填入 Lab 的 `DTYPE_PATH` 和 `CAST_AUDIT`，assert 会检查。
 
 #### Gate 2: 候选生成
 

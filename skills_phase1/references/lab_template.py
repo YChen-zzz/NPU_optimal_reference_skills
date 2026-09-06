@@ -19,22 +19,38 @@ NPU current implementation:
 
 # =====================================================================
 # GATE 1: 精度对齐审计（必填，否则 assert 失败）
-# 对该 SN 中的每个 .float()/.type_as()/.to(torch.float32)：
+#
+# Part A: 记录该 SN 在 GPU 和 NPU 上的完整精度路径
+# Part B: 对每个显式 cast 做 GPU 对照判定
+#
+# 即使用户要求"不改数学语义"，此审计也不能跳过
+# =====================================================================
+
+# Part A: GPU vs NPU dtype 路径（必填）
+DTYPE_PATH = {
+    "gpu_input_dtype": None,       # GPU source 中该 SN 输入的 dtype (如 bf16)
+    "gpu_compute_dtype": None,     # GPU 计算过程中的 dtype (如 bf16, f32 accumulator)
+    "gpu_output_dtype": None,      # GPU 输出的 dtype
+    "npu_input_dtype": None,       # NPU 当前输入的 dtype
+    "npu_compute_dtype": None,     # NPU 计算过程中的 dtype
+    "npu_output_dtype": None,      # NPU 输出的 dtype
+    "weight_dtype": None,          # 参数存储 dtype (f32 weight + bf16 activation = 隐式 cast)
+    "mismatches": [],              # GPU 和 NPU 不一致的地方
+}
+for key in ("gpu_input_dtype", "npu_input_dtype", "gpu_compute_dtype", "npu_compute_dtype"):
+    assert DTYPE_PATH[key] is not None, f"GATE 1A: {key} 未填写"
+
+# Part B: 显式 cast 审计（对每个 .float()/.type_as()/.to(torch.float32)）
 #   1. 读 GPU source 同一位置，确认 GPU 是否有这个 cast
 #   2. GPU 没有 → "移植遗留"，归入 L1 候选
 #   3. GPU 也有 → "原始设计"，不动
-# 即使用户要求"不改数学语义"，移植遗留的分析也不能跳过
-# =====================================================================
-PRECISION_AUDIT = {
+CAST_AUDIT = {
     # 格式: "位置描述": {"gpu_has_cast": True/False, "verdict": "移植遗留"/"原始设计"}
     # 示例: "loss.py:42 logits.float()": {"gpu_has_cast": False, "verdict": "移植遗留"},
+    # 如果该 SN 无显式 cast，填: "无显式cast": {"gpu_has_cast": None, "verdict": "该SN无cast"}
 }
-assert len(PRECISION_AUDIT) > 0 or "该 SN 无 cast 操作", \
-    "GATE 1 未完成：必须审计该 SN 中所有 .float()/.type_as()/.to() 调用"
-for loc, info in PRECISION_AUDIT.items():
-    assert info.get("gpu_has_cast") is not None, f"GATE 1: {loc} 缺少 gpu_has_cast 判定"
-    assert info.get("verdict") in ("移植遗留", "原始设计", "该SN无cast"), \
-        f"GATE 1: {loc} 缺少 verdict"
+assert len(CAST_AUDIT) > 0, \
+    "GATE 1B 未完成：必须审计该 SN 中所有显式 cast，无 cast 也要标注"
 
 # =====================================================================
 # GATE 2: 真实 Shape（必填，从训练代码 print 获取，禁止手动推断）
