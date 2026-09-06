@@ -9,7 +9,7 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 
 1. **按 step 占比从大到小做。** 大头优先，低占比 SN 可精简。
 2. **GPU 是参照不是答案。** 对齐优化意图，用 NPU 方法实现。
-3. **移植遗留 ≠ 数学语义。** GPU 没有的 `.float()` 是移植遗留，移除它是恢复原始语义，即使用户说"不改数学语义"也合规。
+3. **移植遗留 ≠ 数学语义。** GPU 训练中没有的 `.float()` 是移植遗留，移除它是恢复原始语义，即使用户说"不改数学语义"也合规。
 4. **Forward + backward + 真实 shape 才算有效 benchmark。** Shape 必须从训练代码 print 获取，禁止手动推断。
 5. **单机 benchmark ≠ 多卡增益。** 必须 ablation 验证。
 6. **不因单次失败放弃。** 追根因，换方式再试。
@@ -34,8 +34,9 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 1. 从 GPU IR 提取 fusion groups
 2. 按语义功能分组为 Supernode
 3. 在 NPU source 中标注每个 SN 对应的代码范围
-4. 估算每个 SN 占 step 时间的比例
-5. **progress.md 中的 SN 行按占比降序排列**，Step 3 严格按此顺序执行
+4. 用 GPU Teacher 粗估每个 SN 占 step 时间的比例
+5. **采集一次 NPU L0 profiling 修正排序**：构造短跑脚本（方法见 [skills_phase2/01_preparation/references/profiling_collection.md](../skills_phase2/01_preparation/references/profiling_collection.md)「训练短跑策略」），采集 L0，用实测的算子耗时修正 GPU 粗估占比。GPU 估算和 NPU 实测不一致时以 NPU 实测为准
+6. **progress.md 中的 SN 行按修正后的占比降序排列**，Step 3 严格按此顺序执行
 
 为每个 SN 创建 Lab 骨架 `benchmarks/supernodes/sn_<name>.py`，使用 [references/lab_template.py](references/lab_template.py) 中的模板。
 
@@ -81,11 +82,17 @@ L4 必须覆盖以下候选（缺一不可，不适用的标注原因）：
 
 1. **compile 当前累计 winner**（不管来自 L0/L1/L2/L3 哪级）
 2. **compile GPU fusion 对应的代数表达族**（可能和 eager winner 不同）
-3. **不同 scope**：最小 elementwise chain / activation+linear / 完整 SN
+3. **不同 scope**（可选，仅在认为有必要时测试）
 4. **覆盖全部真实 shape**（不只测一个 regime）
 
+**必须用 `backend='npu'`**，不是默认 inductor：
+```python
+@torch.compile(backend='npu', dynamic=False)
+def fn(x): ...
+```
+
 首次编译耗时与 steady-state 分开记录，不因 cold-start 否决。
-详见 [references/compile_guide.md](references/compile_guide.md)。
+更多 compile 知识（PATH 排错、多卡注意事项等）见 [references/compile_guide.md](references/compile_guide.md)。
 
 ### L0-L6 层级定义
 

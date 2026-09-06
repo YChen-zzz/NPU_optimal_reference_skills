@@ -70,6 +70,8 @@ assert len(SHAPES) > 0, "GATE 2 未完成：必须从训练代码 print 获取�
 COMPILE_AUDIT = {
     "compile_cumulative_winner": None,     # 编译当前累计 winner（来自 L0/L1/L2/L3）
     "compile_gpu_fusion_expr": None,       # 编译 GPU fusion 对应的代数表达族
+    "compile_scope_variants": None,        # 不同 scope（可选，仅在认为有必要时测试）
+    "all_shapes_tested": None,             # 是否覆盖全部真实 shape
     "compile_scope_variants": None,        # 不同 scope（最小chain / +linear / 完整SN）
     "all_shapes_tested": None,             # 是否覆盖全部真实 shape
 }
