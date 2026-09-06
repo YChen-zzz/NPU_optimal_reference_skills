@@ -34,8 +34,9 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 1. 从 GPU IR 提取 fusion groups
 2. 按语义功能分组为 Supernode
 3. 在 NPU source 中标注每个 SN 对应的代码范围
-4. 估算每个 SN 占 step 时间的比例
-5. **progress.md 中的 SN 行按占比降序排列**，Step 3 严格按此顺序执行
+4. 估算每个 SN 占 step 时间的比例（可参考 GPU profiling summary，注意 GPU 占比 ≠ NPU 占比，仅作粗排依据）
+5. **优化器类 SN（如 Adam、NorMuon 等）优先级后调**——优化器在 step 中的占比通常远低于前向+反向计算，即使 GPU profiling 显示占比较高也不应排在 Attention、MLP、Loss 等前面
+6. **progress.md 中的 SN 行按占比降序排列**，Step 3 严格按此顺序执行
 
 为每个 SN 创建 Lab 骨架 `benchmarks/supernodes/sn_<name>.py`，使用 [references/lab_template.py](references/lab_template.py) 中的模板。
 
