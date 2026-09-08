@@ -77,6 +77,7 @@
 - `permute + contiguous` 链 → 上游选择正确 layout
 - Flat forward: 从 `nn.Module` 提取 weights 用 `F.*` 直接调用（消除框架 dispatch）
 - 结构性权重融合（QKV 合并等）→ 需配套 state_dict remap
+- 逐 head 独立算子（Q/K RMSNorm、Rotary 等）：必须同时测试 Q、K 分别执行 vs 合并 Q/K 后执行，合并版可减少 kernel launch 次数
 
 ### L4: torch.compile
 
