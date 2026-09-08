@@ -65,7 +65,7 @@ sed -n '<start>,<end>p' ir_post_fusion.txt
 1. 用上述命令提取 GPU fusion groups 概览
 2. 按**语义功能**分组：服务同一计算目的的相邻 fusion groups 合为一个 Supernode
 3. 在 NPU source 中标注每个 Supernode 对应的代码范围
-4. 估算每个 SN 占 step 时间的比例 → 确定优化优先级
+4. 估算每个 SN 占 step 时间的比例 → 确定优化优先级（优化器类 SN 如 Adam、NorMuon 等优先级后调，即使 profiling 占比较高也排在前向+反向计算类 SN 之后）
 
 ### ⚠️ 强制产出: Lab 骨架文件
 
@@ -137,8 +137,10 @@ def B0_control():
 **精度对齐**:
 - GPU 在该 SN 用什么 dtype（input/compute/accumulator/output/saved_for_backward）？
 - NPU 是否多了 cast（.float()/.type_as()/.to()）？
-- 哪些 cast 是精度必需的，哪些是移植遗留？
+- 哪些 cast 是精度必需的，哪些是移植遗留？对每个 cast，读 GPU source 同一位置确认（注意区分 training 和 validation path，以 training path 为准）
+- 移除将高精度降到低精度的 cast（如 fp32→bf16）需特别谨慎 — 这类 cast 若 GPU 也有且最终 loss 正常，通常能提供显著性能增益，贸然去掉反而会降低速度
 - ⚡ **常见陷阱**: GPU→NPU 移植时经常在 loss/norm 计算前插入 `.float()` 但 GPU 训练实际用 bf16。必须读 GPU source 确认 training path 的真实 dtype — 不要假设 f32 是必需的。移除移植遗留的 `.float()` 同时还能省去一次全 tensor 的 cast 开销。
+- ⚠ **精度验证基准规则**: GPU 精度路径是 ground truth。当判定某 cast 为「移植遗留」时，验证基准必须是 GPU 精度路径（如 GPU 用 bf16 则 control 也用 bf16），不得用 NPU 遗留的 fp32 路径做 control — bf16 vs fp32 的数值差异是遗留造成的，不是优化引入的精度回退。
 
 **Layout 对齐**:
 - 有无不必要的 transpose / .contiguous() / .view() vs .reshape()？
