@@ -141,7 +141,7 @@ def B0_control():
 - NPU 是否多了 cast（.float()/.type_as()/.to()）？
 - 哪些 cast 是精度必需的，哪些是移植遗留？对每个 cast，读 GPU source 同一位置确认（注意区分 training 和 validation path，以 training path 为准）
 - 移除将高精度降到低精度的 cast（如 fp32→bf16）需特别谨慎 — 这类 cast 若 GPU 也有且最终 loss 正常，通常能提供显著性能增益，贸然去掉反而会降低速度
-- ⚡ **常见陷阱**: GPU→NPU 移植时经常在 loss/norm 计算前插入 `.float()` 但 GPU 训练实际用 bf16。必须读 GPU source 确认 training path 的真实 dtype — 不要假设 f32 是必需的。移除移植遗留的 `.float()` 同时还能省去一次全 tensor 的 cast 开销。
+- ⚡ **常见陷阱**: GPU→NPU 移植时经常在 loss/norm 计算前插入 `.float()` 但 GPU 训练实际用 bf16。**必须读 GPU source (而不是IR) 确认 training path 的真实 dtype** — 不要假设 f32 是必需的。移除移植遗留的 `.float()` 同时还能省去一次全 tensor 的 cast 开销。
 - ⚠ **精度验证基准规则**: GPU 精度路径是 ground truth。当判定某 cast 为「移植遗留」时，验证基准必须是 GPU 精度路径（如 GPU 用 bf16 则 control 也用 bf16），不得用 NPU 遗留的 fp32 路径做 control — bf16 vs fp32 的数值差异是遗留造成的，不是优化引入的精度回退。
 
 **Layout 对齐**:
@@ -215,8 +215,6 @@ GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**�
 | **L0** | API 参数/环境变量 | 0-1 行。改 API 参数、加环境变量 |
 | **L1** | 消除冗余 | 去多余 cast、去重复计算、去不必要 sync |
 | **L2** | NPU 官方融合 API | 搜索 `dir(torch_npu)` 找等价融合算子（详见 [references/npu_optimization_patterns.md](references/npu_optimization_patterns.md)） |
-
-> ⚡ L2 搜索前先读 [NPU 算子目录](../skills_phase2/03_optimization/references/npu_operator_catalog.yaml)，其中包含各融合算子的签名、参数约束和已知陷阱。
 | **L3** | 等价手动改写 | 改表达式不改语义。消除 double-transpose、buffer 复用、表达式简化 |
 | **L4** | torch.compile | `@torch.compile(backend='npu', dynamic=False)` 包裹函数 |
 | **L5** | Custom autograd | 当 API forward 快但 backward 有问题时 |

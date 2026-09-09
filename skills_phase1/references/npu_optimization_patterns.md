@@ -134,3 +134,4 @@ L0-L5 全部不足时。
 | 单机 2x 多卡无效 | dispatch overhead 被 comm 隐藏 | 必须 ablation |
 | `dynamic=True` 比 False 慢 | guard checking overhead | 固定 shape 用 False |
 | 同一 tensor 重叠 slice 赋值慢 | NPU 为保证读写正确性插入额外 ViewCopy/临时 tensor | 改用 `chunk+cat` 或预分配 buffer 写入，避免源和目标在同一 tensor 上重叠 |
+| `npu_fusion_attention` 未传 `sparse_mode` / `pre_tockens` | 默认走全量计算最慢路径 | 必须测试 `sparse_mode=0`（全量）和 `sparse_mode=4`（band sparse）。注意：0 可用但 4 可能不可用，两者都要验证。参数名是 `pre_tockens`（CANN 官方拼写，非 `pre_tokens`） |
