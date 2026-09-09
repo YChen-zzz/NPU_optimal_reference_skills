@@ -25,6 +25,8 @@ Stage 1 完成后输出以下内容，然后进入 Stage 2：
 - 最终 cumulative full 的 train_time + val_loss
 - Stage 2 使用的 baseline commit
 
+**切换前必须检查 progress.md**：不允许有 pending 或 🔄 状态的高优先级 SN。如有，必须先完成或给出 evidence-based skip 理由，不得直接跳过进入 Stage 2。
+
 GPU Teacher 完全不可用时（用户明确无 GPU 环境，或 `ir_post_fusion.txt` 确实不存在），可直接进入 Stage 2。
 
 ## Stage 2: Profiling 驱动优化

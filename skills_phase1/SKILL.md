@@ -345,6 +345,7 @@ val_loss_every = num_scheduled_iterations + num_extension_iterations  # 最后�
 3. 提交多卡短跑 → 结果写入独立 `logs/sn_<name>_L<N>.log`
 4. 对比 baseline 的 `step_avg`
 5. **只有 step_avg 下降才接受**
+6. **某层级候选 ablation 失败只否决该候选本身**，不关闭整个 SN 或更高层级。尤其是 eager 候选（L0-L3）失败不阻止 compile 候选（L4）进入 ablation — compile 改变执行模型，结果可能完全不同
 
 **注意**: 短跑的 `val_loss` 不用于判断正确性（步数太少未收敛）。正确性在 Lab 的 `cosine_similarity` 中已验证。短跑只验证**多卡环境下的真实速度增益**。
 

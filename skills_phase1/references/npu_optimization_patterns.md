@@ -133,3 +133,4 @@ L0-L5 全部不足时。
 | compile 后 loss 发散 | trainable scalar 参与梯度 | 只 compile 纯数学函数 |
 | 单机 2x 多卡无效 | dispatch overhead 被 comm 隐藏 | 必须 ablation |
 | `dynamic=True` 比 False 慢 | guard checking overhead | 固定 shape 用 False |
+| 同一 tensor 重叠 slice 赋值慢 | NPU 为保证读写正确性插入额外 ViewCopy/临时 tensor | 改用 `chunk+cat` 或预分配 buffer 写入，避免源和目标在同一 tensor 上重叠 |
