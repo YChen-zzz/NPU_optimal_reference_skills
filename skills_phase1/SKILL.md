@@ -7,7 +7,7 @@ description: NPU 训练性能优化。以 GPU compiled evidence 为参照，自�
 
 ## 核心原则
 
-1. **逐 Supernode 做到极致。** 一个 SN 的所有优化层级测完再做下一个。
+1. **逐 Supernode 形成结论。** 每个 SN 都必须有可审计结论；按预期收益优先推进，彼此独立的 SN 可以交错或并行，不要求完成一个后才能开始下一个。
 2. **GPU 是参照不是答案。** 对齐优化意图，用 NPU 方法实现。
 3. **Forward + backward + 真实 shape 才算有效 benchmark。**
 4. **单机 benchmark ≠ 多卡增益。** 必须 ablation 验证。
@@ -65,7 +65,9 @@ sed -n '<start>,<end>p' ir_post_fusion.txt
 1. 用上述命令提取 GPU fusion groups 概览
 2. 按**语义功能**分组：服务同一计算目的的相邻 fusion groups 合为一个 Supernode
 3. 在 NPU source 中标注每个 Supernode 对应的代码范围
-4. 估算每个 SN 占 step 时间的比例 → 确定优化优先级（优化器类 SN 如 Adam、NorMuon 等优先级后调，即使 profiling 占比较高也排在前向+反向计算类 SN 之后）
+4. 估算每个 SN 占 step 时间的比例，结合 GPU/NPU gap 确定优化优先级：
+   - 高优先级：Output/Loss、Attention、MLP、RMSNorm 及其 backward 等前向+反向计算主链 — 优先做，winner 尽早组合验证
+   - 低优先级：Metadata、Embedding、Communication、Optimizer、低频小算子 — 排在高优先级之后
 
 ### ⚠️ 强制产出: Lab 骨架文件
 
@@ -173,7 +175,7 @@ docstring 填完后，将每个 gap 映射为 TODO 候选：
 
 ### 3a-ter. GPU Compile 对齐候选 (强制)
 
-**除了上面按 gap 类型推导的通用候选外，每个 SN 必须至少两组专门尝试复现 GPU compile 结果的候选。**
+GPU/NPU gap 大的 SN（如融合后 kernel 数差距大）应多尝试不同方式复现 GPU compile 结果；gap 小的 SN 可测试一种代表性方式或直接 skip。
 
 GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**被融合/消除/简化。NPU 的目标是用任何可行方法达到等效状态（不限于 compile，任何能对齐 kernel 数量 + 精度 + 效率的方式都算）。
 
@@ -218,9 +220,9 @@ GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**�
 | **L5** | Custom autograd | 当 API forward 快但 backward 有问题时 |
 | **L6** | AscendC kernel | 最后手段 |
 
-**每级内穷举多个方案**:
+**候选生成提示**:
 
-在每个层级内，不要只尝试一种方法就进入下一级。主动发散：
+高优先级 SN 在每个层级内应主动发散，不要只尝试一种方法就进入下一级；低优先级 SN 每个 gap 测试一种代表性实现即可。
 
 - **L0**: 查阅该 SN 所用 API 的完整签名，列出所有可调参数逐个测试；搜索相关环境变量。
 - **L1**: 该 SN 内有几处独立的冗余（cast/重复计算/sync）？每处作为独立方案分别测试。同时检查参数存储 dtype——如果 weight 是 f32 但 activation 是 bf16，考虑将 weight 永久转为 bf16（消除每次 forward 的隐式 cast）。
@@ -372,44 +374,41 @@ Agent 容易在连续失败后放弃或在 "看起来够好" 时过早停止。�
 
 - 每个格子: ✅ (测完+结果), 🔄 (进行中), ❌ (失败但已记录原因), `-` (未开始), `skip:原因`
 - **Agent 每次启动时先读这个文件**，从上次停下的地方继续
-- **只有所有高优先级 SN 的所有格子都填满后才能声明完成**
+- **高优先级 SN 的 L0-L4 格子都填满后才能声明完成；低优先级 SN 有 accepted/rejected/skip 结论即可。**
 
-### 停止条件 (唯一允许停止的情况)
+### 停止条件
 
-Agent **只有**满足以下**全部**条件时才能停止当前 SN：
+当前 SN 满足以下条件即可标记为 done：
 
-1. L0-L4 每级至少测试过 4 个方案（或有明确 skip 原因写入 progress）
-2. 每级内的方案都跑过 forward + backward + 多 shape
-3. 如果某级报错，已追过根因并尝试至少 2 种不同的修复方式
+1. 已识别的每个 GPU/NPU gap 至少测试过一个合理实现（或记录 evidence-based skip）
+2. 高收益 SN（gap 大或优先级高）应在有实质差异的方向上多探索候选，尤其是 L4 的表达式族 × compile scope 组合
+3. 测试过的方案都含 forward + backward + 真实 shape
 4. Winner 已通过多卡 ablation（或确认增益 < 测量噪声）
+5. 没有真实 gap 的层级直接标注 skip，不需要凑候选
 
-不允许因为以下原因停止：
-- "这个 API 报错了" → 追根因（PATH？格式？参数？）
-- "benchmark 显示更慢" → 检查精度是否对齐、shape 是否真实
-- "感觉没什么能做的了" → 检查 progress 表是否有未填的格子
-- "增益太小不值得" → 记录数值，但仍然完成所有级别的测试
+### 失败处理
 
-### 失败重试规则
-
-同一方向失败时：
-1. 第 1 次失败: 记录错误，分析根因
-2. 第 2 次（换方式）: 修改参数/格式/组合再试
-3. 第 3 次（换条件）: 改变 shape/dtype/scope 再试
-4. 3 次全失败: 记录 "L<N>: ❌ 原因=..., 尝试=3次, 结论=当前环境不支持"，进入下一级
+1. 确定性失败（平台限制、基础设施错误）：修复或确认后即可关闭，不机械重试
+2. 高收益候选（预计 E2E ≥ 0.5%）：最多三次不同方式修复
+3. 低收益候选：最多一次修复后关闭
+4. 失败重试不得阻塞其他独立 SN 的并行推进
 
 ### 上下文恢复
 
-如果对话过长需要重新开始：
+**实时更新 progress**: 每个 job 提交时立即在 progress.md 标记为 🔄，不要等 job 完成后再更新。job 的日志文件名和脚本中应包含 baseline commit hash，作为归属标识。
+
+对话中断或上下文丢失后恢复：
 1. 读 `benchmarks/supernodes/progress.md` 恢复状态
 2. 读已存在的 `sn_*.py` lab 脚本恢复历史结果
-3. 读 `ablation_*.log` 恢复多卡验证结果
-4. 从 progress 表中第一个未完成的格子继续
+3. 读 `logs/` 目录下的日志，通过 baseline commit hash 核对归属
+4. 当前 baseline commit 下已完成且结果可验证的实验直接导入 progress，不重跑
+5. 不得仅因 SN 顺序变化、progress 创建较晚或上下文恢复而重复运行
 
 ---
 
 ## 何时重新分析
 
-- 所有高优先级 SN 的 L0-L6 都测完，总增益仍不够
+- 所有高优先级 SN 的 L0-L4 都测完，总增益仍不够
 - 代码结构大改后旧 benchmark 失效
 - 发现新的 NPU API 或环境变量
 - Regime/shape 变化使旧结论失效
