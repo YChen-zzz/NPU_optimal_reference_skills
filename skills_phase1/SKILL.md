@@ -215,6 +215,8 @@ GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**�
 | **L0** | API 参数/环境变量 | 0-1 行。改 API 参数、加环境变量 |
 | **L1** | 消除冗余 | 去多余 cast、去重复计算、去不必要 sync |
 | **L2** | NPU 官方融合 API | 搜索 `dir(torch_npu)` 找等价融合算子（详见 [references/npu_optimization_patterns.md](references/npu_optimization_patterns.md)） |
+
+> ⚡ L2 搜索前先读 [NPU 算子目录](../skills_phase2/03_optimization/references/npu_operator_catalog.yaml)，其中包含各融合算子的签名、参数约束和已知陷阱。
 | **L3** | 等价手动改写 | 改表达式不改语义。消除 double-transpose、buffer 复用、表达式简化 |
 | **L4** | torch.compile | `@torch.compile(backend='npu', dynamic=False)` 包裹函数 |
 | **L5** | Custom autograd | 当 API forward 快但 backward 有问题时 |

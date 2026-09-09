@@ -91,6 +91,7 @@ operators:
       - "eager 模式支持 fp32；GE 图模式仅 fp16/bf16"
       - "与 torch.compile 图模式不兼容 (multi-stream)，需用 FIA 替代"
       - "pre_tockens / next_tockens 是 CANN 官方拼写 (非 pre_tokens)"
+      - "sparse_mode: 必须测试 0 (全量计算) 和 4 (band sparse)。可能出现 sparse_mode=0 可用但 sparse_mode=4 不可用的情况，两者都要验证"
       - "pse (position bias) dtype 必须与 query 一致，不一致时静默产生错误结果"
       - "返回 7 个值，推理只用第 1 个，用 *_ 丢弃"
       - "Fallback 场景: KV cache / cross-attention / output_attentions / head pruning"
