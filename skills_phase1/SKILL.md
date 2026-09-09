@@ -66,8 +66,8 @@ sed -n '<start>,<end>p' ir_post_fusion.txt
 2. 按**语义功能**分组：服务同一计算目的的相邻 fusion groups 合为一个 Supernode
 3. 在 NPU source 中标注每个 Supernode 对应的代码范围
 4. 估算每个 SN 占 step 时间的比例，结合 GPU/NPU gap 确定优化优先级：
-   - 高优先级：Output/Loss、Attention、MLP、RMSNorm 及其 backward 等前向+反向计算主链 — 优先做，winner 尽早组合验证
-   - 低优先级：Metadata、Embedding、Communication、Optimizer、低频小算子 — 排在高优先级之后
+   - **高优先级**：Output/Loss、Attention（含 Metadata）、MLP、RMSNorm 及其 backward 等前向+反向计算主链 — 优先做，winner 尽早组合验证
+   - **低优先级**：Embedding、Communication、Optimizer、低频小算子 — 排在高优先级之后
 
 ### ⚠️ 强制产出: Lab 骨架文件
 
