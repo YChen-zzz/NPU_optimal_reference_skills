@@ -66,7 +66,7 @@ sed -n '<start>,<end>p' ir_post_fusion.txt
 2. 按**语义功能**分组：服务同一计算目的的相邻 fusion groups 合为一个 Supernode
 3. 在 NPU source 中标注每个 Supernode 对应的代码范围
 4. 估算每个 SN 占 step 时间的比例，结合 GPU/NPU gap 确定优化优先级：
-   - **高优先级**：Output/Loss、Attention（含 Metadata）、MLP、RMSNorm 及其 backward 等前向+反向计算主链 — 优先做，winner 尽早组合验证
+   - **高优先级**：Output/Loss、Attention（含 Metadata）、MLP、RMSNorm 及其 backward 等前向+反向计算主链 — 按 GPU/NPU gap 从大到小排序，gap 最大的最先做。前三个高优先级 SN 的 winner 出来后做第一次 full，后续每累计 2-3 个新 winner 再做一次 full
    - **低优先级**：Embedding、Communication、Optimizer、低频小算子 — 排在高优先级之后
 
 ### ⚠️ 强制产出: Lab 骨架文件
@@ -331,7 +331,7 @@ val_loss_every = num_scheduled_iterations + num_extension_iterations  # 最后�
 **Ablation 执行规则**:
 
 1. 先跑一次 baseline 短跑 → 记录 `step_avg` 作为对照 → 存入 `logs/baseline_short.log`
-2. 每个有增益的方案创建**独立文件**（`train_gpt_short_X.py` + `run_short_X.sh`）
+2. 只提交 Lab 中的 winner（不是所有有增益的方案）进入多卡 short 验证
 3. 提交多卡短跑 → 结果写入独立 `logs/sn_<name>_L<N>.log`
 4. 对比 baseline 的 `step_avg`
 5. **只有 step_avg 下降才接受**
