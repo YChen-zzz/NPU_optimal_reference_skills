@@ -331,7 +331,7 @@ val_loss_every = num_scheduled_iterations + num_extension_iterations  # 最后�
 **Ablation 执行规则**:
 
 1. 先跑一次 baseline 短跑 → 记录 `step_avg` 作为对照 → 存入 `logs/baseline_short.log`
-2. 只提交 Lab 中的 winner（不是所有有增益的方案）进入多卡 short 验证
+2. 只提交 Lab 中的 winner 进入多卡 short 验证
 3. 提交多卡短跑 → 结果写入独立 `logs/sn_<name>_L<N>.log`
 4. 对比 baseline 的 `step_avg`
 5. **只有 step_avg 下降才接受**
