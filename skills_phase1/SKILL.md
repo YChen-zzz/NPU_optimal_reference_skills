@@ -235,6 +235,15 @@ GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**�
 
 **累计搜索**: 每级的 winner 成为下一级的 parent baseline。最终报告 cumulative gain vs B0。
 
+**L4 compile 候选覆盖**:
+
+L4 必须覆盖以下候选（不适用的标注原因）：
+1. **compile 当前累计 winner**（不管来自 L0/L1/L2/L3 哪级）
+2. **compile GPU fusion 对应的代数表达族**（可能和 eager winner 不同）
+3. **不同 scope**（高优先级 SN 鼓励尝试，低优先级可跳过）
+
+不得只编译 eager winner 而忽略其他代数表达族 — compile 可能改变不同表达式的相对性能。
+
 **L4 (compile) 关键知识**:
 
 ⚡ **必须用 `backend='npu'`**:
