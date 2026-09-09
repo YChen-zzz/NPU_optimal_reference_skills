@@ -204,7 +204,7 @@ GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**�
    NPU 优化后:     K kernels, dtype=..., (对齐程度: K/N)
    ```
 
-**这不是 "试一次 compile 不行就算了"** — 如果 `backend='npu'` 的 compile 不能一步到位，要拆开看：GPU 融合的 ops 中，哪些子集可以被 NPU compile？哪些需要用 API 替代？哪些需要手动消除？分而治之，逼近目标。
+**这不是 "试一次 compile 不行就算了"** — 如果 `backend='npu'` 的 compile 不能一步到位，要拆开看：GPU 融合的 ops 中，哪些子集可以被 NPU compile？哪些需要用 API 替代？哪些需要手动消除？分而治之，逼近目标。特别是当 compile 整个 scope 因某个 op 的 converter 失败时，应尝试 compile 能编译的子集 + eager fused API 处理剩余部分的混合方案。
 
 ### 3b. 实现并运行 Lab 中的候选方案
 
@@ -318,6 +318,7 @@ L4: <compile>       | ...     | ...     | ...     | ...      | ...
 - Lab 中必须测试所有适用的 L0-L6 方案（不适用的标注跳过原因）
 - 所有方案必须含 backward（优化前向但破坏梯度的无效）
 - Lab 中发现的 winner 进入 3d 多卡 ablation；ablation 通过后才改训练代码
+- **跨 shape 结果不一致时**：某候选在部分 shape 上有明显优势、部分 shape 上有劣势，不要仅凭单个 shape 的结果否决。训练中各 shape 的实际占比不同，应将其提交 short run 验证 E2E 效果
 - Lab 脚本**永久保留**，作为优化决策的证据（为什么选了这个方案、为什么跳了那个）
 
 ### 3d. 多卡 Ablation (~60s 快速验证)
