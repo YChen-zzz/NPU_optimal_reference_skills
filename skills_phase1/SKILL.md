@@ -262,7 +262,7 @@ find /usr/local/Ascend -name "bishengir-compile"
 export PATH="/usr/local/Ascend/<version>/bisheng_toolkit/bishengir/bin:$PATH"
 ```
 
-⚡ **Compile scope 很重要**: 不要只 compile 最小子表达式。尝试逐步扩大 scope（只包 activation → 包 activation+linear → 包 norm+linear+activation+linear），更大 scope 通常有更好的 fusion 效果。每种 scope 作为独立候选方案在 Lab 中对比。
+⚡ **Compile scope 很重要**: 不要只 compile 最小子表达式。高优先级 SN 必须测试 GPU fusion group 对应的完整 scope（如 GPU 将 linear→activation→linear 融合为一个 kernel，则 NPU 的 L4 必须测试 compile 这整个范围，而不是只 compile 中间的 activation）。小 scope compile 无增益不代表大 scope 也无增益 — 更大 scope 通常有更好的 fusion 效果。
 
 **适用判断**:
 - ✅ 适合: 多个 elementwise/pointwise 链（sigmoid+mul, relu+mul, div+sigmoid+mul）
