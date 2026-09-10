@@ -235,6 +235,10 @@ GPU compile 后的状态是 ground truth — 它证明了这些 ops **可以**�
 
 **累计搜索**: 每级的 winner 成为下一级的 parent baseline。最终报告 cumulative gain vs B0。
 
+**L0-L4 完成后的 compile 二次验证（高优先级 SN 强制）**:
+
+L0-L4 产出最终 winner 后，若 winner 不是 compile 候选，必须将该 winner 放入 GPU fusion group 对应的完整 scope 做一次 compile 测试。这一步独立于 L4 中已有的 compile 候选 — L4 可能编译的是原始表达式，而此步编译的是累计 winner。若 winner 已经是 compile 候选则跳过。
+
 **L4 compile 候选覆盖**:
 
 L4 必须覆盖以下候选（不适用的标注原因）：
