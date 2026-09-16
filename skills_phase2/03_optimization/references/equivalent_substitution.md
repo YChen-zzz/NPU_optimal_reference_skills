@@ -56,6 +56,10 @@
 - per-token sliding conv（unfold）→ pad+stack（backward 路径更 NPU 友好）
 - 逐元素组合表达 → 矩阵化批量表达（减少 kernel 数，提升并行度）
 
+### 进一步：自定义融合（Ascend C）
+
+当上述三层替换后，profiling 仍显示连续算子链对同一大 Tensor 反复读写 HBM（典型特征：多个 pointwise / cast / reduction 算子串联，中间结果未被消除，如 pointwise → cast → reduction → softmax 链，每步都对完整大 Tensor 做一次 HBM 读写），且该算子链本身不复杂、占用比例较高时，可以考虑用 Ascend C 实现自定义融合 kernel，将整条算子链合并为单次读写。训练场景注意同时评估 forward 和 backward 路径。
+
 ## 约束
 
 ### 等价性验证
