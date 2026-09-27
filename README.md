@@ -46,7 +46,3 @@ NPU_two_stage_tuning/
 ```bash
 ln -sfn $(pwd)/NPU_two_stage_tuning ~/.kerminal/skills/npu_two_stage_tuning
 ```
-
-## 相关 Skill
-
-[`npu-record-migrate-verify`](npu-record-migrate-verify/SKILL.md)：从已有 NanoGPT NPU record 中选取完整验证、达标且端到端时间最短的版本，迁移到目标环境复跑并整理交付。该 Skill 与两阶段性能调优独立；使用前需提供站点路径和环境信息。
