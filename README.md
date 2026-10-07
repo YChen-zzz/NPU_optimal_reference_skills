@@ -7,7 +7,7 @@
 
 > **一套可复用的 Skills，引导 Coding Agent 自动完成 NPU 训练负载的两阶段性能优化——先对齐 GPU 已验证的优化，再通过 Profiling 驱动深层调优。**
 >
-> 使用 [Codex](https://openai.com/index/codex/) + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized) speedrun 排行榜中的 27 个 record 进行了 NPU 专项优化（16×Ascend 910C），平均加速 **2.0x**（已上传 20 个，剩余近期上传）。本 Skills 同时兼容 [Kerminal](https://kerminal.cn/)。
+> 使用 [Codex](https://openai.com/index/codex/) + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized) speedrun 排行榜中的 27 个 record 进行了 NPU 专项优化（8×Ascend 910C），平均加速 **2.0x**（已上传 20 个，剩余近期上传）。本 Skills 同时兼容 [Kerminal](https://kerminal.cn/)。
 
 ---
 
@@ -15,14 +15,14 @@
 
 - 🤖 **Agent 驱动优化** — Coding Agent 读取 Skills 后，自动分析 GPU compiled evidence、采集 NPU Profiling、实施优化（主要使用 [Codex](https://openai.com/index/codex/) + GPT-5.6 验证，同时兼容 [Kerminal](https://kerminal.cn/)）
 - 🔄 **两阶段流水线** — Stage 1 利用 GPU compile IR 作为 teacher signal 快速对齐；Stage 2 切换到 Profiling 驱动的深层瓶颈分析
-- 🚀 **平均 2.0x 加速** — 在 modded-nanogpt-npu 排行榜 27 个 record 上验证（16×Ascend 910C）
+- 🚀 **平均 2.0x 加速** — 在 modded-nanogpt-npu 排行榜 27 个 record 上验证（8×Ascend 910C）
 - 🛠️ **NPU 原生优化** — 算子融合、自定义 Ascend C 算子、bfloat16 权重存储、buffer 复用、schedule 调优
 
 ---
 
 ## 📊 实践案例：modded-nanogpt-npu
 
-使用 Codex + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized) speedrun 排行榜进行优化——该项目是 [KellerJordan/modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) 在 16×Ascend 910C 上的移植版本。
+使用 Codex + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized) speedrun 排行榜进行优化——该项目是 [KellerJordan/modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) 在 8×Ascend 910C 上的移植版本。
 
 | 指标 | 数值 |
 |---|---|
@@ -30,7 +30,7 @@
 | 平均加速 | **2.0x** |
 | 单 record 最高加速 | **2.58x**（record_017: 1183s → 458s） |
 | 最新 record_050 | 563s → 257s（**2.19x**） |
-| 硬件 | 16×Ascend 910C NPU |
+| 硬件 | 8×Ascend 910C NPU |
 
 > 完整结果与日志 → [modded-nanogpt-npu (pr/submit-v1-optimized 分支)](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized)
 
@@ -96,7 +96,7 @@ Codex 用户将 Skills 目录加入 workspace 即可，Agent 会自动识别。
 | 项目 | 要求 |
 |---|---|
 | NPU | Ascend 910C |
-| NPU 数量 | 16×Ascend 910C（完整训练） |
+| NPU 数量 | 8×Ascend 910C（完整训练） |
 | CANN | 与 Ascend 910C 兼容的版本 |
 | PyTorch | ≥ 2.1 + torch_npu |
 | Python | ≥ 3.10 |
