@@ -7,7 +7,7 @@
 
 > **一套可复用的 Skills，引导 Coding Agent 自动完成 NPU 训练负载的两阶段性能优化——先对齐 GPU 已验证的优化，再通过 Profiling 驱动深层调优。**
 >
-> 使用 [Codex](https://openai.com/index/codex/) + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized) speedrun 排行榜中的 27 个 record 进行了 NPU 专项优化（8×Ascend 910C），平均加速 **2.0x**（已上传 20 个，剩余近期上传）。本 Skills 同时兼容 [Kerminal](https://kerminal.cn/)。
+> 使用 [Codex](https://openai.com/index/codex/) + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/zhaoyiyidan/modded-nanogpt-npu) speedrun 排行榜中的 27 个 record 进行了 NPU 专项优化（8×Ascend 910C），平均加速 **2.0x**（已上传 20 个，剩余近期上传）。本 Skills 同时兼容 [Kerminal](https://kerminal.cn/)。
 
 ---
 
@@ -22,7 +22,7 @@
 
 ## 📊 实践案例：modded-nanogpt-npu
 
-使用 Codex + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized) speedrun 排行榜进行优化——该项目是 [KellerJordan/modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) 在 8×Ascend 910C 上的移植版本。
+使用 Codex + GPT-5.6 配合本 Skills，对 [modded-nanogpt-npu](https://github.com/zhaoyiyidan/modded-nanogpt-npu) speedrun 排行榜进行优化——该项目是 [KellerJordan/modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) 在 8×Ascend 910C 上的移植版本。
 
 | 指标 | 数值 |
 |---|---|
@@ -32,7 +32,7 @@
 | 最新 record_050 | 563s → 257s（**2.19x**） |
 | 硬件 | 8×Ascend 910C NPU |
 
-> 完整结果与日志 → [modded-nanogpt-npu (pr/submit-v1-optimized 分支)](https://github.com/YChen-zzz/modded-nanogpt-npu/tree/pr/submit-v1-optimized)
+> 完整结果与日志 → [modded-nanogpt-npu](https://github.com/zhaoyiyidan/modded-nanogpt-npu)
 
 ---
 
