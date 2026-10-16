@@ -58,7 +58,7 @@ Stage 2: Profiling 驱动优化
 ## 📁 目录结构
 
 ```text
-NPU_optimal_reference_skills/
+TrainBridge/
 ├── SKILL.md                    ← 两阶段流程编排入口
 ├── README.md                   ← 本文件
 ├── skills_phase1/              ← Stage 1: GPU Teacher Supernode 调优
