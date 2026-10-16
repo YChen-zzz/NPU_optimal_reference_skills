@@ -1,4 +1,4 @@
-# NPU Optimal Reference Skills
+# TrainBridge: Agentic NPU Training Optimization Guided by GPU Compilation Evidence
 
 ### 面向 Coding Agent 的两阶段 NPU 训练性能优化 Skills
 
